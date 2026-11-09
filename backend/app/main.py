@@ -10,18 +10,27 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.decide import analyze
 from app.impact import assess_change
 from app.settings import EXAMPLE, FRONTEND, ROOT
 from app.simulate import run_counterfactual, run_scenario
 from app.store import (
     active_path,
     active_raw,
+    current_mission,
     current_view,
+    decide_run,
     ensure_ready,
+    fail_run,
+    fidelity_report,
     ingest,
     inspect_sync,
+    learn_run,
+    record_check,
     record_event,
+    record_loop,
     record_outcome,
+    start_run,
     synchronize,
 )
 
@@ -85,12 +94,91 @@ def create_app() -> FastAPI:
         except KeyError as exc:
             raise HTTPException(400, str(exc).strip("'")) from exc
 
+    @app.post("/api/decisions")
+    def decision(body: DecisionIn) -> dict:
+        try:
+            raw = active_raw()
+            view = current_view()
+            report = run_counterfactual(raw, view["models"], body.module)
+            width = ((view.get("forecast") or {}).get("by_module") or {}).get(body.module, {}).get("width", 0.12)
+            return analyze(report, float(width))
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(400, str(exc).strip("'")) from exc
+
     @app.post("/api/counterfactuals")
     def counterfactual(body: CounterfactualIn) -> dict:
         try:
             raw = active_raw()
             view = current_view()
             return run_counterfactual(raw, view["models"], body.module)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(400, str(exc).strip("'")) from exc
+
+    @app.get("/api/run")
+    def run_status() -> dict:
+        try:
+            return current_mission()
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/run")
+    def run_start() -> dict:
+        try:
+            return start_run()
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/run/approve")
+    def run_approve(body: RunDecisionIn) -> dict:
+        try:
+            return decide_run(body.task, body.approve)
+        except KeyError as exc:
+            raise HTTPException(400, str(exc).strip("'")) from exc
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/run/fail")
+    def run_fail(body: RunTaskIn) -> dict:
+        try:
+            return fail_run(body.task)
+        except KeyError as exc:
+            raise HTTPException(400, str(exc).strip("'")) from exc
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/run/learn")
+    def run_learn(body: RunLearnIn) -> dict:
+        try:
+            return learn_run(body.task, body.happened)
+        except KeyError as exc:
+            raise HTTPException(400, str(exc).strip("'")) from exc
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/fidelity")
+    def fidelity() -> dict:
+        try:
+            return fidelity_report()
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/fidelity/checks")
+    def fidelity_check(body: CheckIn) -> dict:
+        try:
+            return record_check(body.module, body.channel, body.passed, body.action, body.note)
+        except KeyError as exc:
+            raise HTTPException(400, str(exc).strip("'")) from exc
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/loop")
+    def loop_step(body: LoopIn) -> dict:
+        try:
+            return record_loop(body.module, body.action, body.happened, body.kind)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
         except KeyError as exc:
@@ -136,7 +224,7 @@ def create_app() -> FastAPI:
         page = FRONTEND / "index.html"
         if not page.is_file():
             raise HTTPException(404, "UI is not built")
-        return FileResponse(page)
+        return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
     @app.get("/assets/{asset_path:path}")
     def assets(asset_path: str) -> FileResponse:
@@ -160,6 +248,10 @@ class InterventionIn(BaseModel):
     module: str
 
 
+class DecisionIn(BaseModel):
+    module: str
+
+
 class CounterfactualIn(BaseModel):
     module: str
 
@@ -167,6 +259,35 @@ class CounterfactualIn(BaseModel):
 class ScenarioIn(BaseModel):
     name: str = "Scenario"
     interventions: list[InterventionIn]
+
+
+class CheckIn(BaseModel):
+    module: str
+    channel: Literal["build", "test", "production"]
+    passed: bool
+    action: str = ""
+    note: str = ""
+
+
+class RunTaskIn(BaseModel):
+    task: str
+
+
+class RunDecisionIn(BaseModel):
+    task: str
+    approve: bool
+
+
+class RunLearnIn(BaseModel):
+    task: str
+    happened: bool
+
+
+class LoopIn(BaseModel):
+    module: str
+    action: str
+    happened: bool
+    kind: Literal["bug", "incident", "delay", "perf"] = "bug"
 
 
 class OutcomeIn(BaseModel):

@@ -29,11 +29,16 @@ The header **Scan** field takes a folder on this machine, not a GitHub URL. An a
 | Time | Step through the system as it was 20, 40, 60 days ago. Relations hold over an interval. |
 | Sync | **Check repository** compares the virtual twin with the folder and does not change it. **Apply** folds the difference in as events. Incidents you record stay on the twin. |
 | Risk radar | Filter bug, incident, delay, and performance indexes. |
+| Forecast | Read the predicted failures, the p50–p90 count band, and the confidence interval on each call. Thin history and few recorded outcomes widen the band. |
 | Change lab | Tick the files a proposal would touch. The lab walks the blast radius and names reviewers. |
 | Scenarios | Run one hypothetical: tests, an extraction, a second owner, a circuit breaker, or a freeze. The repository is not edited. |
 | What if | Compare the decision that happened with each alternative, scored on its own. The lowest combined movement is marked preferred. |
+| Decide | Keep bug, incident, delay, and cycles separate. See which measurement would change the choice, and the plan if the failure lands or holds. |
 | Council | Read findings from security, reliability, performance, quality, architecture, and delivery, in one sequence. |
 | Learning | Mark whether a predicted bug happened. Record an incident and the next score includes it. |
+| Loop | The closed loop. The policy ranks an action, you record what you did and whether it failed, and both the action value and the calibration update. |
+| Run | Start from the council plan. Agents that share a file wait. A safe measurement is recorded by the twin. Security, high severity, and wide changes wait for approval. A failed step comes back as a measurement. The repository is not edited. |
+| Fidelity | See whether imports bound, including unbound and dynamic ones. Deploys and incidents in history are production checks. A build or a test is kept and does not move the bug index. A production check updates the incident index only when its band does not cross 0.50. An action counts only when it sits between a failure and a later pass. A simulation is not evidence that a deploy will succeed. |
 
 Beliefs, outcomes, and incidents are stored in `backend/data/twin.sqlite`. Delete that file to start over; the next launch scans Northwind again.
 

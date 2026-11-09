@@ -14,6 +14,7 @@ from app.simulate import run_counterfactual, run_scenario
 RETRY = "services/payments/retry.py"
 CHARGE = "services/payments/charge.py"
 CHECKOUT = "services/checkout/checkout.py"
+CLIENT = "clients/web/checkout.ts"
 STOCK = "services/inventory/stock.py"
 GATEWAY = "services/gateway/main.py"
 PRICING = "services/checkout/pricing.py"
@@ -71,6 +72,25 @@ def test_retry_is_the_top_bug_risk(twin):
     assert retry["features"]["test_pressure"] > 0.4
     assert "retry.py" in twin["narrative"]
     assert 20 <= twin["health"] <= 90
+
+
+def test_forecast_ranks_failures_and_widens_thin_history(twin):
+    forecast = twin["forecast"]
+    lead = forecast["failures"][0]
+    retry = forecast["by_module"][RETRY]
+    client = forecast["by_module"][CLIENT]
+    assert lead["module"] == RETRY
+    assert lead["mode"] == "bug"
+    assert retry["low"] < retry["score"] < retry["high"] <= 1
+    assert client["width"] > retry["width"]
+    assert retry["confidence"] in {"medium", "high"}
+    assert client["confidence"] == "low"
+    assert forecast["band"]["bug_p90"] >= forecast["band"]["bug_p50"]
+    assert "No outcomes" in forecast["confidence"]["note"]
+    from app.forecast import build_forecast
+
+    narrowed = build_forecast(twin["modules"], forecast["band"], 12)
+    assert narrowed["by_module"][RETRY]["width"] < retry["width"]
 
 
 def test_security_leads_the_plan(twin):
@@ -133,6 +153,59 @@ def test_counterfactual_compares_alternatives_with_what_happened(raw):
     assert extracted["deltas"]["cycles"] < 0
     with pytest.raises(KeyError):
         run_counterfactual(raw, None, "missing.py")
+
+
+def test_decision_keeps_tradeoffs_and_asks_before_acting_inside_the_band(raw):
+    from app.decide import analyze
+
+    report = run_counterfactual(raw, None, RETRY)
+    wide = analyze(report, 0.25)
+    front = {item["action"] for item in wide["pareto"]}
+    assert "add_tests" in front
+    assert "add_circuit_breaker" in front
+    assert "freeze" not in front
+    assert wide["status"] == "measure"
+    assert wide["plan"]["now"]["action"] == "measure"
+    assert "Record whether" in wide["plan"]["now"]["title"] or wide["information"]["changes_decision"]
+    assert wide["plan"]["if_holds"]["action"] == "none"
+    assert wide["plan"]["if_failure"]["action"] != "none"
+    assert any(probe["changes_decision"] and probe["loss"] > 0 for probe in wide["probes"])
+    assert wide["causal"]
+    assert wide["causal"][0]["intervention"].startswith("do(")
+    tight = analyze(report, 0.01)
+    assert tight["status"] == "act"
+    assert tight["plan"]["now"]["action"] != "measure"
+    dominated = {item["action"] for item in wide["dominated"]}
+    assert front.isdisjoint(dominated)
+
+
+def test_policy_abandons_an_action_that_keeps_failing(raw):
+    from app.optimize import apply_feedback, build_loop, empty_policy, reliability, apply_calibration
+
+    first = build_loop(raw, None, RETRY, [], empty_policy())
+    action = first["recommendation"]["action"]
+    assert action != "none"
+    assert "untested" in first["situation"]
+    assert first["calibrated_score"] == first["raw_score"]
+    policy = empty_policy()
+    for _ in range(5):
+        policy = apply_feedback(policy, first["situation"], action, happened=True, took=True)
+    second = build_loop(raw, None, RETRY, [], policy)
+    learned = next(item["learned"] for item in second["actions"] if item["action"] == action)
+    assert learned < -0.5
+    assert second["recommendation"]["action"] != action
+    curve = reliability(
+        [
+            {"predicted": 0.9, "happened": False, "kind": "bug"},
+            {"predicted": 0.85, "happened": False, "kind": "bug"},
+            {"predicted": 0.8, "happened": False, "kind": "bug"},
+        ]
+    )
+    high = next(band for band in curve["bins"] if band["name"] == "high")
+    assert high["observed"] == 0
+    assert high["gap"] > 0.5
+    assert apply_calibration(0.86, curve) < 0.86
+    assert apply_calibration(0.5, reliability([])) == 0.5
 
 
 def test_learning_nudges_the_active_feature(twin):
@@ -300,6 +373,158 @@ def test_build_is_deterministic(raw):
     assert build_twin(raw)["health"] == build_twin(raw)["health"]
 
 
+def _step(agent, severity, modules, effort="S", title=None):
+    return {
+        "agent": agent,
+        "severity": severity,
+        "title": title or f"{agent} step",
+        "modules": modules,
+        "effort": effort,
+        "remediation": "Do the work in the repository.",
+        "expected_effect": "Pressure falls.",
+    }
+
+
+def test_run_records_a_safe_measurement_and_holds_the_rest():
+    from app.autonomy import build_mission
+
+    mission = build_mission(
+        [
+            _step("Quality", "medium", ["services/payments/retry.py"], title="Tests"),
+            _step("Security", "critical", ["services/payments/retry.py"], title="Secret"),
+            _step("Architect", "high", ["services/inventory/stock.py", "services/checkout/checkout.py"], effort="L"),
+        ]
+    )
+    quality, security, architect = mission["tasks"]
+    assert mission["writes_repository"] is False
+    assert quality["status"] == "done"
+    assert quality["approver"] == "twin"
+    assert quality["repository"] == "unchanged"
+    assert "not edited" in quality["result"]
+    assert security["status"] == "awaiting"
+    assert security["action"] == "hold"
+    assert security["waits_on"] == "t1"
+    assert "follows Quality" in security["coordination"]
+    assert architect["status"] == "awaiting"
+    assert "Blast radius is 2 modules" in architect["gate"]
+    assert "Large effort" in architect["gate"]
+
+
+def test_rejection_replans_the_next_agent_as_a_measurement():
+    from app.autonomy import build_mission, decide
+
+    mission = build_mission(
+        [
+            _step("Security", "critical", [RETRY], title="Secret"),
+            _step("Quality", "high", [RETRY], title="Tests"),
+        ]
+    )
+    assert mission["tasks"][1]["status"] == "waiting"
+    decide(mission, "t1", False)
+    follower = mission["tasks"][1]
+    assert mission["tasks"][0]["status"] == "rejected"
+    assert follower["status"] == "done"
+    assert follower["action"] == "measure"
+    assert follower["recovered"] is True
+    assert follower["approver"] == "twin"
+    assert mission["status"] == "recovered"
+    assert mission["writes_repository"] is False
+
+
+def test_a_failed_step_narrows_the_follower():
+    from app.autonomy import build_mission, fail
+
+    mission = build_mission(
+        [
+            _step("Quality", "medium", [RETRY]),
+            _step("Delivery", "high", [RETRY]),
+        ]
+    )
+    assert mission["tasks"][1]["status"] == "awaiting"
+    assert "follows Quality" in mission["tasks"][1]["coordination"]
+    fail(mission, "t1")
+    assert mission["tasks"][0]["status"] == "failed"
+    assert mission["tasks"][1]["status"] == "done"
+    assert mission["tasks"][1]["action"] == "measure"
+    assert "Recovered after Quality" in mission["tasks"][1]["gate"]
+
+
+def test_learning_is_once_and_only_after_the_step_is_done():
+    from app.autonomy import build_mission, mark_learned
+
+    mission = build_mission([_step("Quality", "medium", [RETRY])])
+    mark_learned(mission, "t1", True, "Confirmed bug on retry.py")
+    assert mission["tasks"][0]["learned"] is True
+    assert mission["tasks"][0]["outcome"] is True
+    with pytest.raises(KeyError):
+        mark_learned(mission, "t1", False, "again")
+
+
+def test_northwind_run_keeps_security_with_a_person(twin):
+    from app.autonomy import build_mission
+
+    mission = build_mission(twin["plan"])
+    first = mission["tasks"][0]
+    assert first["agent"] == "Security"
+    assert first["status"] == "awaiting"
+    assert first["action"] == "hold"
+    assert all(task["repository"] == "unchanged" for task in mission["tasks"])
+    assert mission["writes_repository"] is False
+
+
+def test_graph_edges_are_resolved_imports_and_simulation_is_not_evidence(raw, twin):
+    from app.fidelity import PRINCIPLE, assess
+
+    known = {module["path"] for module in raw["modules"]}
+    assert raw["edges"]
+    assert all(edge["source"] in known and edge["target"] in known for edge in raw["edges"])
+    report = assess(twin, raw, [])
+    assert report["graph"]["resolved"] == report["graph"]["edges"]
+    assert report["graph"]["dangling"] == 0
+    assert "dynamic imports" in report["graph"]["note"]
+    assert "does not install" in report["graph"]["note"]
+    assert report["graph"]["coverage"] is not None
+    assert report["principle"] == PRINCIPLE
+    assert "not evidence" in report["principle"]
+    assert report["channels"]["production"]["n"] >= 1
+    assert any(check["source"] == "history" and check.get("service") == "payments" for check in report["checks"])
+    payments = next(row for row in report["improvement"]["rows"] if row["module"] == RETRY)
+    assert payments["status"] == "unproven"
+    assert "No recommended action" in payments["detail"]
+    assert "correlation" in report["causation"]["association"]
+    assert "not a measured cause" in report["causation"]["intervention"]
+    assert report["verdict"] != "proven"
+
+
+def test_a_band_across_the_midpoint_does_not_confirm_the_score():
+    from app.fidelity import assess, judge
+
+    assert judge(0.82, 0.70, 0.94, False) == "agreed"
+    assert judge(0.82, 0.70, 0.94, True) == "false_alarm"
+    assert judge(0.20, 0.05, 0.35, False) == "missed"
+    assert judge(0.55, 0.30, 0.80, False) == "uncertain"
+    assert judge(0.55, 0.30, 0.80, True) == "uncertain"
+    checks = [
+        _check(RETRY, "2026-01-01T00:00:00+00:00", passed=False),
+        _check(RETRY, "2026-01-02T00:00:00+00:00", passed=False, action="add_tests"),
+        _check(RETRY, "2026-01-03T00:00:00+00:00", passed=True),
+        _check(STOCK, "2026-01-01T00:00:00+00:00", passed=False),
+        _check(STOCK, "2026-01-03T00:00:00+00:00", passed=False),
+    ]
+    report = assess({"risks": [], "outcomes": [], "weight_history": [], "forecast": {}, "modules": []}, {"modules": [], "edges": [], "dependencies": [], "events": []}, checks)
+    row = next(item for item in report["improvement"]["rows"] if item["module"] == RETRY)
+    assert row["status"] == "consistent"
+    assert "not proof" in row["detail"]
+    assert "stock.py" in row["detail"]
+    assert "caused" not in row["detail"].split("not proof")[0]
+    late = assess(
+        {"risks": [], "outcomes": [], "weight_history": [], "forecast": {}, "modules": []},
+        {"modules": [], "edges": [], "dependencies": [], "events": []},
+        [_check(RETRY, "2026-01-01T00:00:00+00:00", passed=False), _check(RETRY, "2026-01-02T00:00:00+00:00", passed=True, action="add_tests")],
+    )
+    assert late["improvement"]["rows"][0]["status"] == "unproven"
+
+
 def test_api_learns_from_an_outcome(tmp_path, monkeypatch):
     monkeypatch.setenv("TWIN_DB", str(tmp_path / "twin.sqlite"))
     os.environ["TWIN_DB"] = str(tmp_path / "twin.sqlite")
@@ -320,3 +545,95 @@ def test_api_learns_from_an_outcome(tmp_path, monkeypatch):
         assert payload["learning"]["deltas"]
         assert payload["twin"]["calibration"]["n"] == 1
         assert payload["twin"]["calibration"]["brier"] is not None
+
+
+def test_api_run_approves_without_editing_and_then_learns(tmp_path, monkeypatch):
+    monkeypatch.setenv("TWIN_DB", str(tmp_path / "run.sqlite"))
+    os.environ["TWIN_DB"] = str(tmp_path / "run.sqlite")
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    with TestClient(create_app()) as client:
+        started = client.post("/api/run")
+        assert started.status_code == 200, started.text
+        mission = started.json()["mission"]
+        assert mission["writes_repository"] is False
+        security = next(task for task in mission["tasks"] if task["agent"] == "Security")
+        assert security["status"] == "awaiting"
+        approved = client.post("/api/run/approve", json={"task": security["id"], "approve": True})
+        assert approved.status_code == 200, approved.text
+        done = next(task for task in approved.json()["mission"]["tasks"] if task["id"] == security["id"])
+        assert done["status"] == "done"
+        assert done["approver"] == "human"
+        assert done["repository"] == "unchanged"
+        learned = client.post("/api/run/learn", json={"task": security["id"], "happened": True})
+        assert learned.status_code == 200, learned.text
+        body = learned.json()
+        assert body["learning"]["deltas"]
+        assert body["twin"]["calibration"]["n"] == 1
+        updated = next(task for task in body["mission"]["tasks"] if task["id"] == security["id"])
+        assert updated["learned"] is True
+        again = client.post("/api/run/learn", json={"task": security["id"], "happened": False})
+        assert again.status_code == 400
+
+
+def _check(module, created, passed, action=""):
+    return {
+        "module": module,
+        "channel": "production",
+        "kind": "incident",
+        "passed": passed,
+        "predicted": 0.8,
+        "low": 0.7,
+        "high": 0.9,
+        "action": action,
+        "note": "",
+        "verdict": "agreed",
+        "source": "recorded",
+        "created_at": created,
+    }
+
+
+def test_agreed_checks_narrow_only_the_matching_mode(twin):
+    from app.forecast import apply_agreed
+
+    before = twin["forecast"]["by_module"][RETRY]["width"]
+    narrowed = apply_agreed(twin["forecast"], [{"module": RETRY, "kind": "bug", "verdict": "agreed"}])
+    assert narrowed["by_module"][RETRY]["width"] < before
+    assert narrowed["by_module"][RETRY]["agreed_checks"] == 1
+    assert narrowed["by_module"][CLIENT]["width"] == twin["forecast"]["by_module"][CLIENT]["width"]
+    again = apply_agreed(narrowed, [{"module": RETRY, "kind": "bug", "verdict": "agreed"}])
+    assert again["by_module"][RETRY]["width"] == narrowed["by_module"][RETRY]["width"]
+    untouched = apply_agreed(twin["forecast"], [{"module": RETRY, "kind": "incident", "verdict": "agreed"}])
+    assert untouched["by_module"][RETRY]["width"] == before
+
+
+def test_api_check_learns_and_does_not_treat_the_simulation_as_proof(tmp_path, monkeypatch):
+    monkeypatch.setenv("TWIN_DB", str(tmp_path / "fidelity.sqlite"))
+    os.environ["TWIN_DB"] = str(tmp_path / "fidelity.sqlite")
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    with TestClient(create_app()) as client:
+        before = client.get("/api/twin").json()["calibration"]["n"]
+        recorded = client.post(
+            "/api/fidelity/checks",
+            json={"module": RETRY, "channel": "build", "passed": False, "note": "isolated build"},
+        )
+        assert recorded.status_code == 200, recorded.text
+        body = recorded.json()
+        assert body["check"]["verdict"] == "recorded"
+        assert body["check"]["kind"] == "build"
+        assert body["learning"]["skipped"] is True
+        assert body["learning"]["deltas"] == []
+        assert body["twin"]["calibration"]["n"] == before
+        assert "not evidence" in body["fidelity"]["principle"]
+        assert body["fidelity"]["channels"]["build"]["n"] == 1
+        assert body["fidelity"]["channels"]["build"]["recorded"] == 1
+        assert any(check["source"] == "history" for check in body["fidelity"]["checks"])
+        assert body["fidelity"]["verdict"] != "proven"
+        fetched = client.get("/api/fidelity")
+        assert fetched.status_code == 200
+        assert fetched.json()["channels"]["production"]["n"] >= 1

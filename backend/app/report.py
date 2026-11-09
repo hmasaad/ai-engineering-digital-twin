@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from app.agents import ROSTER, analyze, coordinate
+from app.forecast import build_forecast
 from app.score import (
     FEATURE_ORDER,
     KNEES,
@@ -86,6 +87,7 @@ def build_twin(
         "weight_history": list(history or []),
         "outcomes": list(outcomes or []),
         "calibration": _calibration(outcomes or []),
+        "forecast": build_forecast(modules, spread(modules), len(outcomes or [])),
         "signals": raw.get("signals") or {},
     }
 

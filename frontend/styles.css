@@ -45,6 +45,7 @@ button:disabled { cursor: progress; opacity: 0.6; }
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow: auto;
 }
 .brand { display: flex; gap: 10px; align-items: center; }
 .brand strong { display: block; font-family: var(--serif); font-size: 22px; font-weight: 560; letter-spacing: -0.03em; }
@@ -178,6 +179,12 @@ button.solid, #scan-form button, #rescan, .actions button, .preset, .choice, .ch
 .module-btn { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .path, .mono { font-family: var(--mono); font-size: 12px; }
 .meter { height: 7px; background: #070907; border-radius: 99px; overflow: hidden; margin-top: 6px; }
+.band { position: relative; height: 8px; background: #070907; border-radius: 99px; margin: 8px 0 4px; }
+.band i { position: absolute; top: 0; bottom: 0; background: #8b9874; border-radius: 99px; }
+.band b { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--lime); }
+.conf.high { color: var(--good); }
+.conf.medium { color: var(--warn); }
+.conf.low { color: var(--bad); }
 .meter i { display: block; height: 100%; background: var(--good); }
 .meter.bad i { background: var(--bad); }
 .meter.warn i { background: var(--warn); }
@@ -249,7 +256,13 @@ button.solid, #scan-form button, #rescan, .actions button, .preset, .choice, .ch
 }
 .time-chart button[aria-pressed="true"] .bar { background: var(--lime); border-color: transparent; }
 .time-chart span { font-family: var(--mono); font-size: 11px; color: var(--faint); }
-.choice-row { display: flex; gap: 6px; }
+.fidelity.supported, .fidelity.agreed { color: var(--good); }
+.fidelity.partial, .fidelity.uncertain, .fidelity.unvalidated, .fidelity.unproven { color: var(--warn); }
+.fidelity.contradicted, .fidelity.missed, .fidelity.false_alarm, .fidelity.no_improvement { color: var(--bad); }
+.run-status.awaiting, .run-status.waiting { color: var(--warn); }
+.run-status.done { color: var(--good); }
+.run-status.failed, .run-status.rejected, .run-status.blocked { color: var(--bad); }
+.choice-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .choice.yes { border-color: #6a3326; }
 .choice.no { border-color: #24523a; }
 .footnote { color: var(--faint); font-size: 12px; max-width: 78ch; }

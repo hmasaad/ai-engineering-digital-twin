@@ -4,11 +4,16 @@ const TITLES = {
   time: ["Time", "The system, and the relations that held, as of a chosen day"],
   sync: ["Sync", "Keep the virtual twin consistent with the repository"],
   risks: ["Risk radar", "Bug, incident, delay, and performance indexes"],
+  forecast: ["Forecast", "Predicted failures and how sure the twin is"],
   change: ["Change lab", "Evaluate a proposal before it lands"],
   scenarios: ["Scenarios", "Run a decision against the model"],
   whatif: ["What if", "Counterfactual simulation of decisions that were not taken"],
+  decide: ["Decide", "Tradeoffs, the value of a measurement, and the next branch"],
   council: ["Council", "Specialized agents, sequenced into one plan"],
   learn: ["Learning", "Record outcomes and update beliefs"],
+  loop: ["Loop", "Policy, calibration, and the next engineering action"],
+  run: ["Run", "Agents, a safety gate, and a person on the governed steps"],
+  fidelity: ["Fidelity", "What the twin has matched, and what is still unproven"],
 };
 
 const SCENARIOS = [
@@ -61,6 +66,10 @@ const state = {
   scenario: null,
   counterfactual: null,
   cfModule: "",
+  decision: null,
+  decideModule: "",
+  mission: null,
+  fidelity: null,
   error: "",
   toast: "",
   busy: false,
@@ -81,6 +90,8 @@ document.getElementById("scan-form").addEventListener("submit", (event) => {
     state.change = null;
     state.scenario = null;
     state.drift = null;
+    state.mission = null;
+    state.fidelity = null;
   });
 });
 document.getElementById("rescan").addEventListener("click", () => {
@@ -89,6 +100,8 @@ document.getElementById("rescan").addEventListener("click", () => {
     state.twin = await api("/api/scan", { method: "POST", body: JSON.stringify({ path }) });
     state.toast = "Rescanned the current repository.";
     state.drift = null;
+    state.mission = null;
+    state.fidelity = null;
   });
 });
 
@@ -137,6 +150,20 @@ function onClick(event) {
   if (!button || state.busy && button.dataset.action) return;
   if (button.dataset.view) {
     state.view = button.dataset.view;
+    if (button.dataset.view === "run" && !state.mission) {
+      run(async () => {
+        state.mission = await api("/api/run");
+        state.view = "run";
+      });
+      return;
+    }
+    if (button.dataset.view === "fidelity" && !state.fidelity) {
+      run(async () => {
+        state.fidelity = await api("/api/fidelity");
+        state.view = "fidelity";
+      });
+      return;
+    }
     render();
     return;
   }
@@ -188,8 +215,92 @@ function onClick(event) {
       });
       state.view = "whatif";
     });
+  } else if (action === "decide-run") {
+    const module = state.decideModule;
+    run(async () => {
+      if (!module) throw new Error("Choose a module.");
+      state.decision = await api("/api/decisions", {
+        method: "POST",
+        body: JSON.stringify({ module }),
+      });
+      state.view = "decide";
+    });
+  } else if (action === "loop-step") {
+    const module = button.dataset.path;
+    const name = button.dataset.name;
+    const happened = button.dataset.happened === "1";
+    const kind = button.dataset.kind || "bug";
+    run(async () => {
+      const body = await api("/api/loop", {
+        method: "POST",
+        body: JSON.stringify({ module, action: name, happened, kind }),
+      });
+      state.twin = body.twin;
+      state.view = "loop";
+      state.toast = body.learning.note;
+    });
   } else if (action === "outcome") {
     recordOutcome(button.dataset.path, button.dataset.happened === "1");
+  } else if (action === "run-start") {
+    run(async () => {
+      const body = await api("/api/run", { method: "POST", body: "{}" });
+      state.mission = body.mission;
+      state.view = "run";
+      state.toast = "Run started. The repository was not edited.";
+    });
+  } else if (action === "run-approve") {
+    const task = button.dataset.task;
+    const approve = button.dataset.approve === "1";
+    run(async () => {
+      const body = await api("/api/run/approve", {
+        method: "POST",
+        body: JSON.stringify({ task, approve }),
+      });
+      state.mission = body.mission;
+      state.view = "run";
+      state.toast = approve ? "Approved as intent. The repository was not edited." : "Step rejected.";
+    });
+  } else if (action === "run-fail") {
+    const task = button.dataset.task;
+    run(async () => {
+      const body = await api("/api/run/fail", {
+        method: "POST",
+        body: JSON.stringify({ task }),
+      });
+      state.mission = body.mission;
+      state.view = "run";
+      state.toast = "The step did not hold. Later work continues as a measurement.";
+    });
+  } else if (action === "run-learn") {
+    const task = button.dataset.task;
+    const happened = button.dataset.happened === "1";
+    run(async () => {
+      const body = await api("/api/run/learn", {
+        method: "POST",
+        body: JSON.stringify({ task, happened }),
+      });
+      state.mission = body.mission;
+      state.twin = body.twin;
+      state.view = "run";
+      state.toast = body.learning.note;
+    });
+  } else if (action === "fidelity-check") {
+    const passed = button.dataset.passed === "1";
+    const module = document.getElementById("fidelity-module")?.value;
+    const channel = document.getElementById("fidelity-channel")?.value;
+    const name = document.getElementById("fidelity-action")?.value || "";
+    const note = document.getElementById("fidelity-note")?.value || "";
+    run(async () => {
+      if (!module) throw new Error("Choose a module.");
+      const body = await api("/api/fidelity/checks", {
+        method: "POST",
+        body: JSON.stringify({ module, channel, passed, action: name, note }),
+      });
+      state.fidelity = body.fidelity;
+      state.twin = body.twin;
+      state.view = "fidelity";
+      state.toast = `${body.check.verdict} on ${channel}. ${body.learning.note}`;
+    });
   }
 }
 
@@ -197,6 +308,10 @@ function onChange(event) {
   const input = event.target;
   if (input.dataset.action === "cf-module") {
     state.cfModule = input.value;
+    return;
+  }
+  if (input.dataset.action === "decide-module") {
+    state.decideModule = input.value;
     return;
   }
   if (input.dataset.action === "pick") {
@@ -310,11 +425,16 @@ const VIEWS = {
   time: renderTime,
   sync: renderSync,
   risks: renderRisks,
+  forecast: renderForecast,
   change: renderChange,
   scenarios: renderScenarios,
   whatif: renderWhatIf,
+  decide: renderDecide,
   council: renderCouncil,
   learn: renderLearn,
+  loop: renderLoop,
+  run: renderRun,
+  fidelity: renderFidelity,
 };
 
 function renderSync(twin) {
@@ -439,6 +559,32 @@ function renderMap(twin) {
     .join("")}</div></div><aside class="panel detail">${selected ? detail(selected, twin) : "<p class='muted'>No modules.</p>"}</aside></div>`;
 }
 
+function renderForecast(twin) {
+  const forecast = twin.forecast;
+  if (!forecast) return "<p class='muted'>No forecast on this twin. Rescan the repository.</p>";
+  const cards = forecast.failures.map((row) => `
+    <article class="preset">
+      <strong>${esc(short(row.module))}</strong> <span class="tag">${esc(row.mode_label)}</span> <span class="conf ${esc(row.confidence)}">${esc(row.confidence)} confidence</span>
+      <p class="path">${esc(row.module)}</p>
+      <div class="band" aria-hidden="true"><i style="left:${Math.round(row.low * 100)}%;width:${Math.max(2, Math.round((row.high - row.low) * 100))}%"></i><b style="left:${Math.round(row.score * 100)}%"></b></div>
+      <p class="mono">${fmt(row.score)} · band ${fmt(row.low)}–${fmt(row.high)}</p>
+      <p>${esc(row.statement)}</p>
+      <p class="muted">${row.drivers.length ? `Driven by ${esc(row.drivers.join(", "))}.` : "No single feature dominates."}</p>
+    </article>`).join("");
+  return `
+    <p class="narrative">${esc(forecast.headline)} ${esc(forecast.confidence.note)}</p>
+    <section class="hero">
+      ${stat("Bug modules", forecast.expected_bug_modules)}
+      ${stat("p50", forecast.band.bug_p50)}
+      ${stat("p90", forecast.band.bug_p90)}
+      ${stat("Incidents", forecast.expected_incident_services)}
+    </section>
+    <p class="muted">The mark on each bar is the point index. The olive span is the uncertainty band. Open What if to score a different decision against the one that happened.</p>
+    <div class="actions" style="margin:12px 0 16px"><button type="button" data-view="whatif">Open What if</button></div>
+    <div class="list">${cards}</div>
+    <p class="footnote">${forecast.band.trials} draws. p50–p90 is the spread of how many modules the indexes would flag, not a guaranteed failure count.</p>`;
+}
+
 function renderRisks(twin) {
   const kinds = ["bug", "incident", "delay", "perf"];
   const rows = twin.risks.filter((risk) => state.kind === "all" || risk.kind === state.kind);
@@ -504,6 +650,268 @@ function counterfactualResult(result) {
       <p>${esc(result.why)}</p>
     </section>
     <div class="list">${cards}</div>`;
+}
+
+function renderLoop(twin) {
+  const loop = twin.loop;
+  if (!loop) return "<p class='muted'>No policy yet. Rescan the repository.</p>";
+  const chosen = loop.recommendation;
+  const bins = loop.calibration.bins.map((band) => `
+    <div class="row" style="grid-template-columns: 80px 1fr 1fr 1fr">
+      <span class="path">${esc(band.name)}</span>
+      <span class="mono">${band.n ? fmt(band.predicted) : "—"}</span>
+      <span class="mono">${band.n ? fmt(band.observed) : "—"}</span>
+      <span class="${band.gap == null ? "flat" : deltaTone(band.gap)}">${band.gap == null ? "—" : fmtDelta(band.gap)}</span>
+    </div>`).join("");
+  const actions = loop.actions.map((item) => `
+    <div class="row" style="grid-template-columns: 1.4fr 70px 70px 70px">
+      <span>${esc(item.title)}${item.action === chosen.action ? ' <span class="tag">next</span>' : ""}</span>
+      <span class="mono">${fmt(item.prior)}</span>
+      <span class="mono">${fmt(item.learned)}</span>
+      <span class="mono">${fmt(item.value)}</span>
+    </div>`).join("");
+  const steps = (loop.steps || []).map((step) => `<p class="path">${esc(step.action)} · reward ${fmt(step.reward)} · value ${fmt(step.before)} → ${fmt(step.after)}</p>`).join("");
+  return `
+    <p class="narrative">Observe the forecast, let the policy rank an action, then record what you did and whether the failure happened. That is one reinforcement step. The same outcome calibrates the index, and the next recommendation uses both.</p>
+    <div class="loop">
+      <div><strong>Observe</strong><span>${esc(short(loop.module))} · ${esc(loop.situation)}</span></div>
+      <div><strong>Decide</strong><span>${esc(chosen.title)}</span></div>
+      <div><strong>Record</strong><span>what you did, and the outcome</span></div>
+      <div><strong>Update</strong><span>action value and calibration</span></div>
+    </div>
+    <section class="panel" style="margin-bottom:16px">
+      <p class="kicker">Next action · ${esc(short(loop.module))}</p>
+      <p>${esc(loop.why)}</p>
+      <p class="mono">Raw bug index ${fmt(loop.raw_score)} · calibrated ${fmt(loop.calibrated_score)}</p>
+      <div class="actions" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px">
+        <button type="button" class="choice yes" data-action="loop-step" data-path="${esc(loop.module)}" data-name="${esc(chosen.action)}" data-happened="0" data-kind="bug">Took it, it held</button>
+        <button type="button" class="choice no" data-action="loop-step" data-path="${esc(loop.module)}" data-name="${esc(chosen.action)}" data-happened="1" data-kind="bug">Took it, failure happened</button>
+        <button type="button" data-action="loop-step" data-path="${esc(loop.module)}" data-name="none" data-happened="0" data-kind="bug">Did nothing, it held</button>
+        <button type="button" data-action="loop-step" data-path="${esc(loop.module)}" data-name="none" data-happened="1" data-kind="bug">Did nothing, failure happened</button>
+      </div>
+    </section>
+    <div class="cols">
+      <section class="panel">
+        <p class="kicker">Action values · prior, learned, total</p>
+        <div class="list">${actions}</div>
+      </section>
+      <section class="panel">
+        <p class="kicker">Calibration · predicted, observed, gap</p>
+        <p>${esc(loop.calibration.note)}</p>
+        <div class="list">${bins}</div>
+        <p class="kicker" style="margin-top:14px">Recent steps</p>
+        ${steps || "<p class='muted'>No recorded steps yet.</p>"}
+      </section>
+    </div>`;
+}
+
+function renderDecide(twin) {
+  const code = twin.modules.filter((module) => module.role === "code").slice().sort((a, b) => b.risks.bug - a.risks.bug);
+  if (!code.some((module) => module.path === state.decideModule)) state.decideModule = code[0] ? code[0].path : "";
+  const result = state.decision && state.decision.module === state.decideModule ? state.decision : null;
+  const options = code.map((module) => `<option value="${esc(module.path)}" ${module.path === state.decideModule ? "selected" : ""}>${esc(short(module.path))} · bug ${fmt(module.risks.bug)}</option>`).join("");
+  return `
+    <p class="narrative">Objectives stay separate. A measurement is worth taking when it would change the choice, or when the effect of acting sits inside the forecast band. The second step depends on whether the failure lands.</p>
+    <div class="actions" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap">
+      <select data-action="decide-module">${options}</select>
+      <button type="button" class="primary" data-action="decide-run">Analyze decision</button>
+    </div>
+    ${result ? decisionResult(result) : "<p class='muted'>Choose a module. The analysis does not edit the repository.</p>"}`;
+}
+
+function decisionResult(result) {
+  const front = result.pareto.map((item) => `<article class="preset ${item.action === result.recommendation.action ? "cf-card preferred" : ""}"><strong>${esc(item.title)}</strong><p class="mono">bug ${fmt(item.bug)} · incident ${fmt(item.incident)} · delay ${fmt(item.delay)} · cycles ${item.cycles}</p><p class="muted">Balanced value ${fmt(item.value)}</p></article>`).join("");
+  const probes = result.probes.map((probe) => `<p><span class="path">${esc(probe.question)}</span><br/>${probe.changes_decision ? `Changes the choice to ${esc(probe.title)}. Cost of deciding now: ${fmt(probe.loss)}.` : "Does not change the balanced choice."}</p>`).join("");
+  const causal = result.causal.map((item) => `<article class="preset"><strong>${esc(item.title)}</strong><p class="path">${esc(item.intervention)}</p><p>${esc(item.mechanism)}</p><p class="mono">bug ${fmtDelta(item.effects.bug)} · incident ${fmtDelta(item.effects.incident)} · delay ${fmtDelta(item.effects.delay)} · cycles ${fmtDelta(item.effects.cycles)}</p><p class="muted">${esc(item.holds)}</p></article>`).join("");
+  const plan = ["now", "if_failure", "if_holds"].map((key) => {
+    const step = result.plan[key];
+    const label = key === "now" ? "Now" : key === "if_failure" ? "If the failure lands" : "If it holds";
+    return `<article class="preset"><p class="kicker">${label}</p><strong>${esc(step.title)}</strong><p>${esc(step.because)}</p></article>`;
+  }).join("");
+  return `
+    <section class="panel" style="margin-bottom:16px">
+      <p class="kicker">${result.status === "measure" ? "Measure first" : "Act"} · ${esc(short(result.module))}</p>
+      <p>${esc(result.because)}</p>
+      <p>${esc(result.information.note)}</p>
+    </section>
+    <p class="kicker">Adaptive plan</p>
+    <div class="cols" style="margin-bottom:16px">${plan}</div>
+    <div class="cols">
+      <section>
+        <p class="kicker">Pareto front</p>
+        <div class="list">${front}</div>
+      </section>
+      <section>
+        <p class="kicker">Value of a measurement</p>
+        ${probes}
+        <p class="kicker" style="margin-top:14px">Causal paths</p>
+        <div class="list">${causal}</div>
+      </section>
+    </div>`;
+}
+
+const RUN_STATUS = {
+  idle: "Not started",
+  awaiting: "Needs a person",
+  running: "In progress",
+  recovered: "Replanned",
+  settled: "Settled",
+};
+
+const TASK_STATUS = {
+  done: "Done",
+  awaiting: "Needs approval",
+  waiting: "Waiting",
+  rejected: "Rejected",
+  failed: "Failed",
+  blocked: "Blocked",
+  pending: "Pending",
+};
+
+const CHECK_VERDICT = {
+  agreed: "Agreed",
+  false_alarm: "False alarm",
+  missed: "Missed",
+  uncertain: "Inside the band",
+  recorded: "Recorded",
+};
+
+const FIDELITY_VERDICT = {
+  unvalidated: "Unvalidated",
+  partial: "Partial",
+  supported: "Supported by production",
+  contradicted: "Contradicted",
+};
+
+function renderFidelity(twin) {
+  const report = state.fidelity;
+  if (!report) return "<p class='muted'>Reading fidelity.</p>";
+  const code = twin.modules.filter((module) => module.role === "code").slice().sort((a, b) => b.risks.bug - a.risks.bug);
+  const modules = code.map((module) => `<option value="${esc(module.path)}">${esc(short(module.path))}</option>`).join("");
+  const actions = ["", "add_tests", "extract_module", "add_owner", "add_circuit_breaker", "freeze", "hold", "measure"]
+    .map((name) => `<option value="${name}">${name ? esc(name.replaceAll("_", " ")) : "No action"}</option>`)
+    .join("");
+  const graph = report.graph;
+  const band = report.uncertainty;
+  const widest = band.widest
+    ? `${esc(short(band.widest.module))} band ${fmt(band.widest.low)}–${fmt(band.widest.high)} (${esc(band.widest.confidence)})`
+    : "No forecast yet.";
+  const misses = report.learning.misses.length
+    ? report.learning.misses.map((row) => `<p><span class="path">${esc(short(row.module || ""))}</span> ${esc(row.kind)} predicted ${fmt(row.predicted)}, ${row.happened ? "and it happened" : "and it did not"}.</p>`).join("")
+    : "<p class='muted'>No recorded miss yet.</p>";
+  const moved = report.learning.moved.length
+    ? `<p>${report.learning.moved.map((row) => `${esc(row.label)} ${fmt(row.before)} → ${fmt(row.after)}`).join(" · ")}</p>`
+    : "";
+  const checks = report.checks.length
+    ? report.checks.map((check) => `<p><span class="fidelity ${esc(check.verdict)}">${esc(CHECK_VERDICT[check.verdict] || check.verdict)}</span> · ${esc(check.channel)} · ${esc(short(check.module))}${check.verdict === "recorded" ? "" : ` · predicted ${fmt(check.predicted)}`}${check.action ? ` · ${esc(check.action.replaceAll("_", " "))}` : ""}${check.source === "history" ? " · from history" : ""}</p>`).join("")
+    : "<p class='muted'>No build, test, or production check yet.</p>";
+  const improvement = report.improvement.rows.length
+    ? report.improvement.rows.map((row) => `<p><span class="fidelity ${esc(row.status)}">${esc(row.status.replaceAll("_", " "))}</span> · ${esc(short(row.module))}<br/>${esc(row.detail)}</p>`).join("")
+    : "<p class='muted'>A recommended action counts when a failure comes before it and a pass comes after it.</p>";
+  const channels = ["build", "test", "production"].map((name) => {
+    const row = report.channels[name];
+    return `<p class="mono">${name} ${row.n} · agreed ${row.agreed} · contradicted ${row.contradicted} · uncertain ${row.uncertain} · recorded ${row.recorded || 0}</p>`;
+  }).join("");
+  return `
+    <p class="narrative">${esc(report.principle)}</p>
+    <section class="panel" style="margin-bottom:16px">
+      <p class="kicker">Record a check</p>
+      <div class="actions" style="display:flex; gap:8px; flex-wrap:wrap">
+        <select id="fidelity-module">${modules}</select>
+        <select id="fidelity-channel"><option value="build">Isolated build</option><option value="test">Test</option><option value="production">Production</option></select>
+        <select id="fidelity-action">${actions}</select>
+        <input id="fidelity-note" placeholder="What the check observed" />
+        <button type="button" class="choice yes" data-action="fidelity-check" data-passed="0">It failed</button>
+        <button type="button" class="choice no" data-action="fidelity-check" data-passed="1">It passed</button>
+      </div>
+    </section>
+    <p class="kicker"><span class="fidelity ${esc(report.verdict)}">${esc(FIDELITY_VERDICT[report.verdict] || report.verdict)}</span></p>
+    <div class="cols">
+      <section>
+        <p class="kicker">Dependency graph</p>
+        <p>${graph.resolved} resolved file imports. Coverage ${fmt(graph.coverage)}. ${graph.unresolved_count} unbound. ${graph.dynamic_count || 0} dynamic. ${graph.undeclared_count} imported names are missing from the manifest. ${graph.unused_count} manifest entries have no import.</p>
+        <p class="muted">${esc(graph.note)}</p>
+        ${graph.unresolved.map((row) => `<p><span class="path">${esc(short(row.module))}</span> ${esc(row.spec)}</p>`).join("")}
+        <p class="kicker" style="margin-top:14px">Uncertainty</p>
+        <p>${band.calls} calls · high ${band.high} · medium ${band.medium} · low ${band.low}. Widest: ${widest}.</p>
+        <p class="muted">${esc(band.note)}</p>
+        <p class="kicker" style="margin-top:14px">Learning from a miss</p>
+        <p>${report.learning.outcomes} labels · ${report.learning.wrong} disagreed with the call.</p>
+        ${misses}
+        ${moved}
+        <p class="muted">${esc(report.learning.note)}</p>
+      </section>
+      <section>
+        <p class="kicker">Correlation and causation</p>
+        <p>${esc(report.causation.association)}</p>
+        <p class="muted">${report.causation.driver_module ? `${esc(short(report.causation.driver_module))}: ${esc((report.causation.drivers || []).join(", ") || "no strong driver")}` : "No bug index yet."}</p>
+        <p>${esc(report.causation.intervention)}</p>
+        <p>${esc(report.causation.standard)}</p>
+        <p class="kicker" style="margin-top:14px">Did the action improve the outcome?</p>
+        <p class="muted">${esc(report.improvement.note)}</p>
+        ${improvement}
+        <p class="kicker" style="margin-top:14px">Checks</p>
+        ${channels}
+        ${checks}
+        <p class="muted">${esc(report.labels.note)}</p>
+      </section>
+    </div>`;
+}
+
+function renderRun() {
+  const mission = state.mission;
+  if (!mission) return "<p class='muted'>Reading the current run.</p>";
+  const rules = mission.rules.map((rule) => `<p>${esc(rule)}</p>`).join("");
+  const tasks = mission.tasks.length
+    ? mission.tasks.map((task) => runCard(mission, task)).join("")
+    : "<p class='muted'>No run yet. Starting one reads the current council plan and does not edit the repository.</p>";
+  const log = mission.log.length
+    ? mission.log.slice().reverse().map((entry) => `<p><span class="path">${esc(entry.actor === "human" ? "You" : "Twin")}</span> ${esc(entry.detail)}</p>`).join("")
+    : "<p class='muted'>The log starts when a run starts.</p>";
+  return `
+    <p class="narrative">Agents that share a file wait for each other. The twin records a measurement on one file. Security work, high severity, and a wide blast radius wait for you. If a step fails or is rejected, the next agent continues with a measurement. The repository is not edited. The model moves only when you record the outcome.</p>
+    <div class="actions" style="margin-bottom:16px"><button type="button" class="primary" data-action="run-start">Start a run</button></div>
+    <div class="cols">
+      <section>
+        <p class="kicker">${esc(RUN_STATUS[mission.status] || mission.status)}</p>
+        <div class="list">${tasks}</div>
+      </section>
+      <section>
+        <p class="kicker">Governance</p>
+        ${rules}
+        <p class="kicker" style="margin-top:14px">Run log</p>
+        ${log}
+      </section>
+    </div>`;
+}
+
+function runCard(mission, task) {
+  const file = task.modules.length ? short(task.modules[0]) : "no single file";
+  const who = task.approver === "human" ? "by you" : task.approver === "twin" ? "by the twin" : "";
+  const openFollower = mission.tasks.some((other) => other.waits_on === task.id && (other.status === "waiting" || other.status === "awaiting"));
+  const learn = task.status === "done" && task.modules.length === 1 && !task.learned
+    ? `<button type="button" class="choice yes" data-action="run-learn" data-task="${esc(task.id)}" data-happened="1">It happened</button><button type="button" class="choice no" data-action="run-learn" data-task="${esc(task.id)}" data-happened="0">It held</button>`
+    : "";
+  const recover = task.status === "done" && openFollower
+    ? `<button type="button" data-action="run-fail" data-task="${esc(task.id)}">It did not hold</button>`
+    : "";
+  const approve = task.status === "awaiting"
+    ? `<button type="button" class="primary" data-action="run-approve" data-task="${esc(task.id)}" data-approve="1">Approve</button><button type="button" data-action="run-approve" data-task="${esc(task.id)}" data-approve="0">Reject</button>`
+    : "";
+  const dismiss = task.status === "blocked"
+    ? `<button type="button" data-action="run-approve" data-task="${esc(task.id)}" data-approve="0">Dismiss</button>`
+    : "";
+  const learned = task.learned ? `<p class="muted">Model updated. Outcome ${task.outcome ? "happened" : "held"}.</p>` : "";
+  return `<article class="preset">
+    <p class="kicker"><span class="run-status ${esc(task.status)}">${esc(TASK_STATUS[task.status] || task.status)}</span>${who ? ` · ${esc(who)}` : ""}</p>
+    <strong>${esc(task.agent)} · ${esc(task.title)}</strong>
+    <p>${esc(task.coordination)}</p>
+    <p class="muted">${esc(task.gate)}</p>
+    <p class="mono">${esc(task.action_title)} · ${esc(file)}</p>
+    ${task.result ? `<p>${esc(task.result)}</p>` : ""}
+    ${learned}
+    <div class="choice-row">${approve}${dismiss}${learn}${recover}</div>
+  </article>`;
 }
 
 function renderCouncil(twin) {

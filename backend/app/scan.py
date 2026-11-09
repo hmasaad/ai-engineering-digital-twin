@@ -77,6 +77,8 @@ PERF_RULES = [
 
 HEALTH_RE = re.compile(r"(?i)(/health\b|def\s+health\b|HEALTHCHECK\b)")
 TODO_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b")
+DYNAMIC_PY_RE = re.compile(r"importlib\.import_module\s*\(|__import__\s*\(")
+DYNAMIC_JS_RE = re.compile(r"(?<![\w.])import\s*\(")
 JS_IMPORT_RE = re.compile(
     r"""(?:import|export)\s+(?:[^'"\n]+?\s+from\s+)?['\"]([^'\"]+)['\"]|require\(\s*['\"]([^'\"]+)['\"]\s*\)"""
 )
@@ -186,6 +188,8 @@ def scan_repository(root: Path, now: datetime | None = None) -> dict:
         complexity = _python_complexity(text) if language == "python" else _rough_complexity(text)
         module = _module(rel, language, role, text, complexity, evidence)
         module["raw_imports"] = _raw_imports(rel, language, text)
+        module["import_specs"] = len(module["raw_imports"])
+        module["dynamic_imports"] = _dynamic_count(language, text)
         modules.append(module)
 
     index = _python_index(modules)
@@ -193,9 +197,10 @@ def scan_repository(root: Path, now: datetime | None = None) -> dict:
     edges: list[dict] = []
     seen: set[tuple[str, str]] = set()
     for module in modules:
-        resolved, external = _resolve(module, index, known)
+        resolved, external, unresolved = _resolve(module, index, known)
         module["imports"] = resolved
         module["external_imports"] = external
+        module["unresolved_imports"] = unresolved
         module.pop("raw_imports", None)
         for target in resolved:
             key = (module["path"], target)
@@ -352,6 +357,14 @@ def _raw_imports(rel: str, language: str, text: str) -> list[str]:
     return []
 
 
+def _dynamic_count(language: str, text: str) -> int:
+    if language == "python":
+        return len(DYNAMIC_PY_RE.findall(text))
+    if language in {"javascript", "typescript"}:
+        return len(DYNAMIC_JS_RE.findall(text))
+    return 0
+
+
 def _python_imports(rel: str, text: str) -> list[str]:
     try:
         tree = ast.parse(text)
@@ -397,10 +410,12 @@ def _go_imports(text: str) -> list[str]:
     return [match.group(1) for match in GO_IMPORT_RE.finditer(text)]
 
 
-def _resolve(module: dict, index: dict[str, str], known: set[str]) -> tuple[list[str], list[str]]:
+def _resolve(module: dict, index: dict[str, str], known: set[str]) -> tuple[list[str], list[str], list[str]]:
     local: list[str] = []
     external: list[str] = []
+    unresolved: list[str] = []
     language = module["language"]
+    tops = {key.split(".")[0] for key in index}
     for spec in module.get("raw_imports", []):
         if not spec:
             continue
@@ -408,6 +423,8 @@ def _resolve(module: dict, index: dict[str, str], known: set[str]) -> tuple[list
             target = _lookup_dotted(spec, index)
             if target:
                 local.append(target)
+            elif spec.split(".")[0] in tops:
+                unresolved.append(spec)
             elif not _stdlib(spec):
                 external.append(spec.split(".")[0])
         elif language in {"javascript", "typescript"}:
@@ -415,11 +432,13 @@ def _resolve(module: dict, index: dict[str, str], known: set[str]) -> tuple[list
                 target = _lookup_path(spec[5:], known)
                 if target:
                     local.append(target)
+                else:
+                    unresolved.append(spec[5:])
             elif spec.startswith("pkg:"):
                 external.append(spec[4:].split("/")[0])
         elif language == "go" and not _stdlib(spec):
             external.append(spec.split("/")[0])
-    return sorted(set(local)), sorted(set(external))
+    return sorted(set(local)), sorted(set(external)), sorted(set(unresolved))
 
 
 def _lookup_dotted(spec: str, index: dict[str, str]) -> str | None:
