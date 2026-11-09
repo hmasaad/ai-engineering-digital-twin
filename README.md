@@ -26,11 +26,11 @@ The header **Scan** field takes a folder on this machine, not a GitHub URL. An a
 | --- | --- |
 | Overview | Read health, the sharpest risks, and the first council steps. |
 | System map | Select a module and see what it imports and what imports it. |
-| Time | Step through the system as it was 20, 40, 60 days ago. Relations hold over an interval. |
+| Time | Step through the system as it was 20, 40, 60 days ago. Imports, packages, plugins, pull requests, and test links hold over an interval. A dependency upgrade closes the previous version. A build failure is tied to the package the history names. |
 | Sync | **Check repository** compares the virtual twin with the folder and does not change it. **Apply** folds the difference in as events. Incidents you record stay on the twin. |
 | Risk radar | Filter bug, incident, delay, and performance indexes. |
 | Forecast | Read the predicted failures, the p50–p90 count band, and the confidence interval on each call. Thin history and few recorded outcomes widen the band. |
-| Change lab | Tick the files a proposal would touch. The lab walks the blast radius and names reviewers. |
+| Change lab | Tick the files a proposal would touch. The lab walks importers, then the tests, packages, plugins, and recorded build failures tied to those files. That path is evidence from the graph, not proof the change is safe. |
 | Scenarios | Run one hypothetical: tests, an extraction, a second owner, a circuit breaker, or a freeze. The repository is not edited. |
 | What if | Compare the decision that happened with each alternative, scored on its own. The lowest combined movement is marked preferred. |
 | Decide | Keep bug, incident, delay, and cycles separate. See which measurement would change the choice, and the plan if the failure lands or holds. |
@@ -51,6 +51,12 @@ Scan the project root. Twin reads source, imports, manifests, and Dockerfiles. O
 {"age_days": 12, "type": "incident", "service": "checkout", "severity": "sev2", "summary": "Latency while reserving bundles"}
 {"age_days": 11, "type": "deploy", "service": "checkout", "result": "rollback", "summary": "Rolled back"}
 {"age_days": 7, "type": "review", "files": ["services/payments/retry.py"], "hours": 72, "summary": "Review sat for 72 hours"}
+{"age_days": 21, "type": "dependency", "manifest": "requirements.txt", "package": "psycopg", "version": "3.2.1", "prior": "3.1.0", "summary": "Upgrade psycopg"}
+{"age_days": 19, "type": "pull_request", "id": "84", "status": "merged", "merged_age": 18, "files": ["services/payments/retry.py"], "tests": ["tests/test_payments.py"], "summary": "Change retry behavior after the driver upgrade"}
+{"age_days": 17, "type": "build", "id": "ci-441", "result": "failure", "package": "psycopg", "tests": ["tests/test_payments.py"], "summary": "CI failed after the psycopg upgrade"}
+{"age_days": 30, "type": "plugin", "package": "psycopg", "plugin": "libpq", "summary": "psycopg binds the libpq native driver"}
 ```
+
+`pubspec.yaml` dependencies become package nodes. An `android` `package:` under `flutter.plugin.platforms` becomes a native plugin of the pubspec package. A stored scan that predates package records shows one sync notice until the next accepted scan.
 
 Git history is included only when the scanned directory is its own git root. A nested folder does not inherit the parent repository.

@@ -36,6 +36,7 @@ def compare(previous: dict | None, observed: dict) -> dict:
     events.extend(_edge_events(previous, observed))
     events.extend(_history_events(previous, observed))
     events.extend(_dependency_events(previous, observed))
+    events.extend(_package_events(previous, observed))
     events.extend(_signal_events(previous, observed))
     status = "aligned" if not events else "drifted"
     return _report(events, status)
@@ -76,6 +77,8 @@ def event_key(event: dict) -> tuple:
         data.get("severity"),
         data.get("result"),
         data.get("hours"),
+        data.get("package"),
+        data.get("id"),
     )
 
 
@@ -166,6 +169,42 @@ def _dependency_events(previous: dict, observed: dict) -> list[dict]:
         events.append(_event("dependency_added", name, "manifest", f"Dependency {name} was declared."))
     for name in sorted(before - after):
         events.append(_event("dependency_removed", name, "manifest", f"Dependency {name} was removed."))
+    return events
+
+
+def _package_events(previous: dict, observed: dict) -> list[dict]:
+    """Version pins and native plugins. A stored scan with no package records yields one notice."""
+    after = list(observed.get("packages") or [])
+    if "packages" not in previous:
+        if not after:
+            return []
+        return [
+            _event(
+                "packages_observed",
+                str(len(after)),
+                "manifest",
+                f"{len(after)} package records are in the repository and were not in the virtual state.",
+            )
+        ]
+
+    def pin(spec: dict) -> tuple:
+        return (
+            spec.get("manifest") or "",
+            spec.get("name") or "",
+            spec.get("version") or "",
+            tuple(spec.get("plugins") or []),
+        )
+
+    before = {pin(spec) for spec in previous.get("packages") or []}
+    current = {pin(spec) for spec in after}
+    events = []
+    for manifest, name, version, plugins in sorted(current - before):
+        label = f"{name}@{version}" if version else name
+        plugin = f" plugin {plugins[0]}" if plugins else ""
+        events.append(_event("package_added", label, manifest or "manifest", f"{label}{plugin} is declared."))
+    for manifest, name, version, plugins in sorted(before - current):
+        label = f"{name}@{version}" if version else name
+        events.append(_event("package_removed", label, manifest or "manifest", f"{label} is no longer declared."))
     return events
 
 

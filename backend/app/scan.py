@@ -148,16 +148,26 @@ def scan_repository(root: Path, now: datetime | None = None) -> dict:
     files = _walk(root, warnings)
     modules: list[dict] = []
     dependencies: set[str] = set()
+    packages: list[dict] = []
     has_health = False
 
     for path in files:
         rel = path.relative_to(root).as_posix()
         name = path.name
         if name == "requirements.txt":
-            dependencies.update(_requirements(path))
+            specs = _requirement_specs(path, rel)
+            dependencies.update(item["name"] for item in specs)
+            packages.extend(specs)
             continue
         if name == "package.json":
-            dependencies.update(_package_json(path))
+            specs = _package_json_specs(path, rel)
+            dependencies.update(item["name"] for item in specs)
+            packages.extend(specs)
+            continue
+        if name == "pubspec.yaml":
+            specs = _pubspec_packages(path, rel)
+            dependencies.update(item["name"] for item in specs)
+            packages.extend(specs)
             continue
         if name == "Dockerfile" or name.startswith("Dockerfile"):
             text = _read(path)
@@ -223,6 +233,7 @@ def scan_repository(root: Path, now: datetime | None = None) -> dict:
         "edges": edges,
         "events": events,
         "dependencies": sorted(dependencies),
+        "packages": packages,
         "signals": {"has_health": has_health},
         "warnings": warnings,
     }
@@ -470,26 +481,84 @@ def _stdlib(spec: str) -> bool:
 
 
 def _requirements(path: Path) -> set[str]:
-    deps = set()
+    return {item["name"] for item in _requirement_specs(path, path.name)}
+
+
+def _requirement_specs(path: Path, manifest: str) -> list[dict]:
+    specs = []
     for line in _read(path).splitlines():
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("-"):
             continue
         name = re.split(r"[<>=!\[]", line, maxsplit=1)[0].strip()
+        version = ""
+        match = re.search(r"(?:==|>=|<=|~=)\s*([^,\s;]+)", line)
+        if match:
+            version = match.group(1)
         if name:
-            deps.add(name)
-    return deps
+            specs.append({"name": name, "version": version, "manifest": manifest, "plugins": []})
+    return specs
 
 
 def _package_json(path: Path) -> set[str]:
+    return {item["name"] for item in _package_json_specs(path, path.name)}
+
+
+def _package_json_specs(path: Path, manifest: str) -> list[dict]:
     try:
         data = json.loads(_read(path) or "{}")
     except json.JSONDecodeError:
-        return set()
-    deps: set[str] = set()
+        return []
+    specs = []
     for key in ("dependencies", "devDependencies"):
-        deps.update((data.get(key) or {}).keys())
-    return deps
+        for name, version in (data.get(key) or {}).items():
+            specs.append(
+                {
+                    "name": str(name),
+                    "version": version if isinstance(version, str) else "",
+                    "manifest": manifest,
+                    "plugins": [],
+                }
+            )
+    return specs
+
+
+def _pubspec_packages(path: Path, manifest: str) -> list[dict]:
+    """Dependencies and native plugin bindings from a Flutter pubspec.
+
+    The parser is line-oriented. It keeps package names under dependencies and
+    the android package declared under flutter.plugin.platforms.
+    """
+    root_name = ""
+    deps: list[tuple[str, str]] = []
+    plugins: list[str] = []
+    section: list[str] = []
+    for raw_line in _read(path).splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        key, _, value = raw_line.strip().partition(":")
+        key = key.strip()
+        value = value.strip()
+        section = section[: indent // 2]
+        section.append(key)
+        if section == ["name"] and value:
+            root_name = value.strip("\"'")
+        if len(section) == 2 and section[0] in {"dependencies", "dev_dependencies"} and key not in {"sdk", "flutter"}:
+            version = value.strip("\"'")
+            if version in {"", "sdk"}:
+                version = ""
+            deps.append((key, version))
+        if "platforms" in section and key == "package" and value:
+            plugins.append(value.strip("\"'"))
+    specs = [
+        {"name": name, "version": version, "manifest": manifest, "plugins": []}
+        for name, version in deps
+        if name != "flutter"
+    ]
+    if root_name and plugins:
+        specs.append({"name": root_name, "version": "", "manifest": manifest, "plugins": plugins})
+    return specs
 
 
 def _description(root: Path) -> str:
@@ -573,6 +642,15 @@ def _normalize_event(obj: dict, now: datetime) -> dict:
             "result": obj.get("result"),
             "hours": obj.get("hours"),
             "file_stats": file_stats,
+            "package": obj.get("package"),
+            "version": obj.get("version"),
+            "prior": obj.get("prior"),
+            "manifest": obj.get("manifest"),
+            "tests": [str(item) for item in obj.get("tests") or []],
+            "id": None if obj.get("id") is None else str(obj.get("id")),
+            "status": obj.get("status"),
+            "merged_age": obj.get("merged_age"),
+            "plugin": obj.get("plugin"),
         },
     }
 

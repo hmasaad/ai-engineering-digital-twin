@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 
 import pytest
@@ -110,6 +111,25 @@ def test_blast_radius_reaches_the_gateway(twin):
     assert impact["objections"]
     with pytest.raises(KeyError):
         assess_change(twin, ["missing.py"])
+
+
+def test_change_impact_follows_tests_packages_and_the_build(twin):
+    impact = assess_change(twin, [RETRY])["impact"]
+    kinds = {(path["kind"], path["object"]) for path in impact["paths"]}
+    assert ("pull_request", RETRY) in {(path["kind"], path["object"]) for path in impact["paths"]}
+    assert ("test", "tests/test_payments.py") in kinds
+    assert ("failure", "psycopg") in kinds
+    assert ("package", "psycopg@3.2.1") in kinds
+    assert ("plugin", "libpq") in kinds
+    assert "associated with psycopg" in impact["summary"]
+    assert "requests" not in {path["object"] for path in impact["paths"]}
+
+    driver = assess_change(twin, ["libs/common/db.py"])["impact"]
+    package = next(path for path in driver["paths"] if path["kind"] == "package")
+    assert package["object"] == "psycopg@3.2.1"
+    assert package["via"] == "imported by this file"
+    assert any(path["kind"] == "plugin" and path["object"] == "libpq" for path in driver["paths"])
+    assert not any(path["kind"] == "failure" for path in driver["paths"])
 
 
 def test_scenarios_move_the_indexes(raw):
@@ -282,6 +302,95 @@ def test_time_replays_the_system_and_keeps_intervals(twin):
     assert edge["from_age"] < 80
     assert any(fact["predicate"] == "incident_on" for fact in dynamics["facts"])
     assert any(RETRY in item["change"] or "retry.py" in item["change"] for item in slices)
+
+
+def test_engineering_graph_remembers_when_relations_held(twin):
+    from app.temporal import holds
+
+    facts = twin["dynamics"]["facts"]
+    current = next(
+        fact
+        for fact in facts
+        if fact["predicate"] == "depends_on" and fact["object"] == "psycopg@3.2.1"
+    )
+    prior = next(fact for fact in facts if fact["predicate"] == "depends_on" and fact["object"] == "psycopg@3.1.0")
+    assert current["from_age"] == 21
+    assert current["to_age"] is None
+    assert prior["to_age"] == 21
+    assert prior["from_age"] > 21
+    assert holds(current, 10)
+    assert not holds(current, 40)
+    assert holds(prior, 40)
+    assert not holds(prior, 10)
+
+    pull = next(fact for fact in facts if fact["predicate"] == "modifies" and fact["subject"] == "pr:84")
+    affected = next(fact for fact in facts if fact["predicate"] == "affects" and fact["subject"] == "pr:84")
+    assert pull["object"] == RETRY
+    assert pull["from_age"] == 19 and pull["to_age"] == 18
+    assert affected["object"] == "tests/test_payments.py"
+    assert holds(pull, 18)
+    assert not holds(pull, 0)
+
+    failure = next(fact for fact in facts if fact["predicate"] == "failed")
+    link = next(fact for fact in facts if fact["predicate"] == "attributed_to")
+    assert failure["subject"] == "build:ci-441"
+    assert link["object"] == "psycopg"
+    assert holds(failure, 0)
+    assert not holds(failure, 20)
+    plugin = next(fact for fact in facts if fact["predicate"] == "plugin" and fact["object"] == "libpq")
+    assert holds(plugin, 0)
+    assert not holds(plugin, 40)
+    assert any(fact["predicate"] == "covers" and fact["object"] == STOCK for fact in facts)
+    now = twin["dynamics"]["slices"][-1]
+    earlier = next(item for item in twin["dynamics"]["slices"] if item["as_of"] == 20)
+    assert "CI failed" in now["change"]
+    assert "Upgrade psycopg" in earlier["change"]
+
+
+def test_pubspec_plugin_is_a_package_relation(tmp_path):
+    from app.scan import _pubspec_packages
+    from app.temporal import knowledge_graph
+
+    pubspec = tmp_path / "pubspec.yaml"
+    pubspec.write_text(
+        "\n".join(
+            [
+                "name: camera_plugin",
+                "dependencies:",
+                "  flutter:",
+                "    sdk: flutter",
+                "  camera: ^0.10.5",
+                "flutter:",
+                "  plugin:",
+                "    platforms:",
+                "      android:",
+                "        package: com.salt.camera",
+                "        pluginClass: CameraPlugin",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    specs = _pubspec_packages(pubspec, "pubspec.yaml")
+    facts = knowledge_graph({"modules": [], "edges": [], "events": [], "packages": specs})
+    assert any(fact["predicate"] == "depends_on" and fact["object"] == "camera@^0.10.5" for fact in facts)
+    assert any(
+        fact["predicate"] == "plugin" and fact["subject"] == "camera_plugin" and fact["object"] == "com.salt.camera"
+        for fact in facts
+    )
+
+
+def test_sync_notices_a_new_package_pin(raw):
+    from app.sync import compare
+
+    observed = json.loads(json.dumps(raw))
+    observed["packages"] = list(observed["packages"]) + [
+        {"name": "http", "version": "1.2.0", "manifest": "pubspec.yaml", "plugins": ["android/http"]}
+    ]
+    report = compare(raw, observed)
+    assert any(event["kind"] == "package_added" and "http@1.2.0" in event["summary"] for event in report["events"])
+    bare = {key: value for key, value in raw.items() if key != "packages"}
+    missing = compare(bare, raw)
+    assert any(event["kind"] == "packages_observed" for event in missing["events"])
 
 
 def test_sync_is_quiet_when_nothing_moved(raw):

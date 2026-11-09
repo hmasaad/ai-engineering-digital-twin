@@ -24,6 +24,14 @@ PREDICATES = {
     "incident_on": "Incident",
     "deployed": "Deployed",
     "reconciled": "Reconciled",
+    "depends_on": "Depends on",
+    "plugin": "Native plugin",
+    "modifies": "Pull request",
+    "affects": "Affects",
+    "covers": "Test covers",
+    "failed": "Build failure",
+    "attributed_to": "Attributed to",
+    "built": "Build",
 }
 
 
@@ -43,8 +51,10 @@ def build_dynamics(raw: dict, models: dict | None = None) -> dict:
         "predicates": [{"key": key, "label": label} for key, label in PREDICATES.items()],
         "note": (
             "Each slice replays only the history that had already happened, then scores that past system "
-            "with the current weights. Import facts start when both modules exist, because the scanner "
-            "sees structure once, not a separate graph for every commit."
+            "with the current weights. A dependency upgrade closes the previous version. A pull request "
+            "is valid from open until merge. A build failure is a point event, linked to a package when "
+            "the history names one. Import and coverage facts start when both files exist, because the "
+            "scanner sees structure once, not a separate graph for every commit."
         ),
     }
 
@@ -162,6 +172,7 @@ def knowledge_graph(raw: dict, births: dict[str, float] | None = None) -> list[d
                 "Latest author." if open_ended else "Committed during this span.",
             )
         )
+    facts.extend(_engineering_facts(raw, births, roles))
     facts.sort(key=lambda fact: (-(fact.get("from_age") if fact["kind"] == "interval" else fact["at_age"]), fact["predicate"]))
     return facts
 
@@ -237,6 +248,16 @@ def _change(older: dict | None, current: dict, events: list[dict]) -> str:
     commits = sum(1 for event in between if event.get("type") == "commit")
     if commits:
         parts.append(f"{commits} commit{'s' if commits != 1 else ''} land.")
+    upgrades = [event for event in between if event.get("type") == "dependency"]
+    if upgrades:
+        parts.append(upgrades[0].get("summary") or "A dependency is upgraded.")
+    failures = [
+        event
+        for event in between
+        if event.get("type") == "build" and (event.get("data") or {}).get("result") == "failure"
+    ]
+    if failures:
+        parts.append(failures[0].get("summary") or "A build fails.")
     return " ".join(parts) or "No recorded change in this interval."
 
 
@@ -252,6 +273,167 @@ def _sample_ages(events: list[dict]) -> list[float]:
     if not ages:
         ages = [0.0]
     return ages
+
+
+def _engineering_facts(raw: dict, births: dict[str, float], roles: dict[str, dict]) -> list[dict]:
+    """Package, plugin, pull request, test, and build relations with validity intervals."""
+    facts: list[dict] = []
+    upgrades: dict[tuple[str, str], list[dict]] = {}
+    for event in raw.get("events") or []:
+        data = event.get("data") or {}
+        if event.get("type") == "dependency" and data.get("package"):
+            key = (str(data.get("manifest") or ""), str(data["package"]))
+            upgrades.setdefault(key, []).append(event)
+    for history in upgrades.values():
+        history.sort(key=lambda event: float(event["age_days"]), reverse=True)
+
+    seen: set[tuple[str, str]] = set()
+    for spec in raw.get("packages") or []:
+        name = str(spec.get("name") or "")
+        if not name:
+            continue
+        manifest = str(spec.get("manifest") or "manifest")
+        version = str(spec.get("version") or "")
+        key = (manifest, name)
+        seen.add(key)
+        history = upgrades.get(key) or []
+        if history:
+            latest = history[-1]
+            data = latest.get("data") or {}
+            pinned = str(data.get("version") or version)
+            label = f"{name}@{pinned}" if pinned else name
+            start = float(latest["age_days"])
+            facts.append(
+                _interval(
+                    "depends_on",
+                    manifest,
+                    label,
+                    start,
+                    None,
+                    latest.get("summary") or f"{name} from the recorded upgrade.",
+                )
+            )
+            prior = data.get("prior")
+            if prior:
+                older = float(history[-2]["age_days"]) if len(history) > 1 else _older_bound(raw, start)
+                facts.append(
+                    _interval(
+                        "depends_on",
+                        manifest,
+                        f"{name}@{prior}",
+                        older,
+                        start,
+                        f"{name} {prior} until the upgrade.",
+                    )
+                )
+        else:
+            label = f"{name}@{version}" if version else name
+            facts.append(
+                _interval(
+                    "depends_on",
+                    manifest,
+                    label,
+                    0.0,
+                    None,
+                    "Declared in the manifest. No earlier pin was logged.",
+                )
+            )
+        for plugin in spec.get("plugins") or []:
+            facts.append(
+                _interval("plugin", name, str(plugin), 0.0, None, "Native binding declared in the manifest.")
+            )
+
+    for (manifest, name), history in sorted(upgrades.items()):
+        if (manifest, name) in seen:
+            continue
+        latest = history[-1]
+        data = latest.get("data") or {}
+        pinned = str(data.get("version") or "")
+        facts.append(
+            _interval(
+                "depends_on",
+                manifest or name,
+                f"{name}@{pinned}" if pinned else name,
+                float(latest["age_days"]),
+                0.0,
+                "Recorded in history and absent from the current manifest.",
+            )
+        )
+
+    for event in raw.get("events") or []:
+        age = float(event["age_days"])
+        kind = event.get("type")
+        data = event.get("data") or {}
+        summary = event.get("summary") or ""
+        if kind == "pull_request":
+            subject = f"pr:{data.get('id') or 'pr'}"
+            end = _closed(data, age)
+            for path in event.get("files") or []:
+                facts.append(_interval("modifies", subject, path, age, end, summary or "Pull request."))
+            for test in data.get("tests") or []:
+                facts.append(_interval("affects", subject, test, age, end, summary or "Affected tests."))
+        elif kind == "build":
+            subject = f"build:{data.get('id') or 'build'}"
+            result = data.get("result") or "result"
+            if result == "failure":
+                facts.append(_event("failed", subject, result, age, summary or "Build failure."))
+                if data.get("package"):
+                    facts.append(
+                        _event(
+                            "attributed_to",
+                            subject,
+                            str(data["package"]),
+                            age,
+                            summary or f"Failure associated with {data['package']}.",
+                        )
+                    )
+            else:
+                facts.append(_event("built", subject, str(result), age, summary or "Build."))
+            for test in data.get("tests") or []:
+                facts.append(_event("affects", subject, test, age, summary or "Build ran this test."))
+        elif kind == "plugin" and data.get("package") and data.get("plugin"):
+            until = data.get("merged_age")
+            facts.append(
+                _interval(
+                    "plugin",
+                    str(data["package"]),
+                    str(data["plugin"]),
+                    age,
+                    None if until is None else float(until),
+                    summary or "Package binds a native plugin.",
+                )
+            )
+
+    for edge in raw.get("edges") or []:
+        source = roles.get(edge["source"])
+        target = roles.get(edge["target"])
+        if not source or not target or source.get("role") != "test" or target.get("role") != "code":
+            continue
+        facts.append(
+            _interval(
+                "covers",
+                edge["source"],
+                edge["target"],
+                _edge_start(births, edge["source"], edge["target"]),
+                None,
+                "Test imports this module. Valid once both files exist.",
+            )
+        )
+    return facts
+
+
+def _closed(data: dict, opened: float) -> float | None:
+    merged = data.get("merged_age")
+    if merged is not None:
+        return float(merged)
+    if data.get("status") == "merged":
+        return opened
+    return None
+
+
+def _older_bound(raw: dict, upgrade_age: float) -> float:
+    older = [float(event["age_days"]) for event in raw.get("events") or [] if float(event["age_days"]) > upgrade_age + 1e-6]
+    return max(older) if older else upgrade_age
 
 
 def _edge_start(births: dict[str, float], source: str, target: str) -> float:

@@ -28,3 +28,7 @@
 {"age_days": 92, "type": "commit", "author": "Mina Chen", "summary": "Hook charges into the retry worker", "files": {"services/payments/charge.py": [38, 11]}}
 {"age_days": 100, "type": "commit", "author": "Sam Okonkwo", "summary": "Check bundle availability", "files": {"services/inventory/stock.py": [34, 9]}}
 {"age_days": 108, "type": "commit", "author": "Andre Voss", "summary": "Add gateway timeouts", "files": {"services/gateway/main.py": [16, 4]}}
+{"age_days": 30, "type": "plugin", "package": "psycopg", "plugin": "libpq", "summary": "psycopg binds the libpq native driver"}
+{"age_days": 21, "type": "dependency", "manifest": "requirements.txt", "package": "psycopg", "version": "3.2.1", "prior": "3.1.0", "summary": "Upgrade psycopg"}
+{"age_days": 19, "type": "pull_request", "id": "84", "status": "merged", "merged_age": 18, "files": ["services/payments/retry.py"], "tests": ["tests/test_payments.py"], "summary": "Change retry behavior after the driver upgrade"}
+{"age_days": 17, "type": "build", "id": "ci-441", "result": "failure", "package": "psycopg", "tests": ["tests/test_payments.py"], "summary": "CI failed after the psycopg upgrade"}

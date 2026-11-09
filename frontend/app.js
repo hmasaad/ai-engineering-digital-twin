@@ -5,7 +5,7 @@ const TITLES = {
   sync: ["Sync", "Keep the virtual twin consistent with the repository"],
   risks: ["Risk radar", "Bug, incident, delay, and performance indexes"],
   forecast: ["Forecast", "Predicted failures and how sure the twin is"],
-  change: ["Change lab", "Evaluate a proposal before it lands"],
+  change: ["Change lab", "What a change reaches: modules, tests, packages, and recorded failures"],
   scenarios: ["Scenarios", "Run a decision against the model"],
   whatif: ["What if", "Counterfactual simulation of decisions that were not taken"],
   decide: ["Decide", "Tradeoffs, the value of a measurement, and the next branch"],
@@ -497,10 +497,32 @@ function renderTime(twin) {
         <p class="kicker">Relations true at this day</p>
         <p class="muted">${imports.length} import intervals · ${facts.filter((fact) => fact.predicate === "exists").length} modules in existence.</p>
         <div class="list">${imports.slice(0, 8).map((fact) => `<p class="path">imports · ${esc(short(fact.subject))} → ${esc(short(fact.object))}<br/><span class="faint">since ${fact.from_age}d ago</span></p>`).join("")}</div>
+        <p class="kicker" style="margin-top:14px">Engineering relations</p>
+        <div class="list">${engineeringFacts(dynamics.facts, slice.as_of).map((fact) => `<p class="path">${esc(fact.predicate)} · ${esc(short(fact.subject))} → ${esc(short(fact.object))}<br/><span class="faint">${esc(factSpan(fact))}</span></p>`).join("") || "<p class='muted'>None in this 20-day window.</p>"}</div>
         <p class="kicker" style="margin-top:14px">Events in the 20 days leading here</p>
         <div class="list">${events.map((fact) => `<p class="path">${esc(fact.predicate)} · ${esc(fact.summary)}<br/><span class="faint">${fact.at_age}d ago</span></p>`).join("") || "<p class='muted'>None in this 20-day window.</p>"}</div>
       </section>
     </div>`;
+}
+
+function engineeringFacts(facts, asOf) {
+  const ranked = ["depends_on", "plugin", "modifies", "affects", "covers"];
+  const visible = facts.filter(
+    (fact) => ranked.includes(fact.predicate) && (factHolds(fact, asOf) || intervalOverlaps(fact, asOf))
+  );
+  return ranked.flatMap((predicate) => visible.filter((fact) => fact.predicate === predicate)).slice(0, 8);
+}
+
+function intervalOverlaps(fact, asOf) {
+  if (fact.kind !== "interval") return false;
+  const end = fact.to_age == null ? 0 : fact.to_age;
+  return fact.from_age + 0.001 >= asOf && end < asOf + 20;
+}
+
+function factSpan(fact) {
+  if (fact.kind === "event") return `${fact.at_age}d ago`;
+  if (fact.to_age == null) return `since ${fact.from_age}d ago`;
+  return `${fact.from_age}d ago until ${fact.to_age}d ago`;
 }
 
 function factHolds(fact, asOf) {
@@ -608,7 +630,7 @@ function renderChange(twin) {
           <button type="button" data-action="preset-change">Evaluate the retry worker</button>
         </div>
       </section>
-      <section class="panel">${result ? changeResult(result) : "<p class='kicker'>No evaluation yet</p><p class='muted'>Pick the files a change would touch. The lab walks importers out to depth 3 and reads the council findings on that set.</p>"}</section>
+      <section class="panel">${result ? changeResult(result) : "<p class='kicker'>No evaluation yet</p><p class='muted'>Pick the files a change would touch. The lab walks importers out to depth 3, then the tests, packages, plugins, and recorded build failures tied to those files.</p>"}</section>
     </div>`;
 }
 
@@ -976,9 +998,21 @@ function changeResult(result) {
     <p class="kicker">${esc(result.title)}</p>
     <p class="stat" style="padding:0"><span class="kicker">Change risk index</span><b>${fmt(result.risk)}</b></p>
     <p>${esc(result.recommendation)}</p>
+    ${impactBlock(result.impact)}
     <p class="muted">Delay pressure on the edited files: ${fmt(result.delay_pressure)}. Reviewers: ${esc(result.reviewers.join(", ") || "no recent authors")}.</p>
     <div class="list">${result.blast.map((item) => `<div class="row" style="grid-template-columns: 1fr 70px 70px"><span class="path">${esc(item.module)}<br/><span class="faint">${item.relation} · depth ${item.depth}</span></span><span class="mono">${fmt(item.bug)}</span><span class="faint">${item.test_gap ? "untested" : "tested"}</span></div>`).join("")}</div>
     ${result.objections.length ? `<p class="kicker">Objections</p>${result.objections.map((item) => `<p><span class="sev ${item.severity}">${esc(item.agent)}</span> ${esc(item.title)}</p>`).join("")}` : ""}`;
+}
+
+function impactBlock(impact) {
+  if (!impact) return "";
+  const rows = (impact.paths || [])
+    .map(
+      (path) =>
+        `<p class="path">${esc(path.kind)} · ${esc(short(path.subject))} → ${esc(short(path.object))}<br/><span class="faint">${esc(path.via)} · ${esc(path.when)}</span></p>`
+    )
+    .join("");
+  return `<p class="kicker">Impact</p><p>${esc(impact.summary)}</p><div class="list">${rows || "<p class='muted'>No further relation.</p>"}</div>`;
 }
 
 function scenarioResult(result) {

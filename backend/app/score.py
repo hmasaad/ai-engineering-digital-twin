@@ -201,6 +201,7 @@ def observables_from_raw(raw: dict) -> list[dict]:
                 "intervention_drag": 0.0,
                 "evidence": list(module["evidence"]),
                 "imports": list(module["imports"]),
+                "external_imports": list(module.get("external_imports") or []),
             }
         )
     return observables
@@ -266,6 +267,7 @@ def score_observables(observables: list[dict], edges: list[dict], models: dict) 
                 "evidence": obs["evidence"],
                 "imports": sorted(imports.get(obs["path"], [])),
                 "imported_by": sorted(importers.get(obs["path"], [])),
+                "external_imports": list(obs.get("external_imports") or []),
             }
         )
     return views
