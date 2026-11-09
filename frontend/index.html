@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Twin · Engineering Digital Twin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@420;560;680&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="rail">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+          <rect x="3" y="5" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <rect x="12" y="12" width="16" height="16" fill="none" stroke="#d6ff4a" stroke-width="1.6"/>
+        </svg>
+        <div>
+          <strong>Twin</strong>
+          <span>Engineering system</span>
+        </div>
+      </div>
+      <nav>
+        <button type="button" data-view="overview" aria-current="page">Overview</button>
+        <button type="button" data-view="map">System map</button>
+        <button type="button" data-view="time">Time</button>
+        <button type="button" data-view="sync">Sync</button>
+        <button type="button" data-view="risks">Risk radar</button>
+        <button type="button" data-view="change">Change lab</button>
+        <button type="button" data-view="scenarios">Scenarios</button>
+        <button type="button" data-view="whatif">What if</button>
+        <button type="button" data-view="council">Council <em id="badge-council"></em></button>
+        <button type="button" data-view="learn">Learning</button>
+      </nav>
+      <p class="rail-note">Beliefs update when you record what shipped, failed, or held.</p>
+    </aside>
+    <main id="main">
+      <header id="topbar">
+        <div class="titles">
+          <p id="crumb" class="eyebrow">Twin</p>
+          <h1 id="title">Overview</h1>
+          <p id="subtitle">What the twin believes right now</p>
+        </div>
+        <div class="top-actions">
+          <div id="health-pill" class="health-pill">—</div>
+          <form id="scan-form">
+            <label class="sr" for="path-input">Repository path</label>
+            <input id="path-input" name="path" type="text" placeholder="Scan a repository path" autocomplete="off" />
+            <button type="submit">Scan</button>
+          </form>
+          <button id="rescan" type="button">Rescan</button>
+        </div>
+      </header>
+      <div id="error" class="banner" hidden></div>
+      <div id="toast" class="toast" role="status" hidden></div>
+      <div id="view" aria-live="polite">Loading the twin…</div>
+    </main>
+  </div>
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>

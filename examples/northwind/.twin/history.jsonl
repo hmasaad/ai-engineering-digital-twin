@@ -1,0 +1,30 @@
+{"age_days": 4, "type": "deploy", "service": "payments", "result": "success", "summary": "Payments rolled forward after the retry patch"}
+{"age_days": 6, "type": "commit", "author": "Mina Chen", "summary": "Leave payment retries uncapped", "files": {"services/payments/retry.py": [160, 42]}}
+{"age_days": 7, "type": "review", "files": ["services/payments/retry.py"], "hours": 72, "summary": "Retry review sat for 72 hours"}
+{"age_days": 9, "type": "commit", "author": "Mina Chen", "summary": "Capture again when the provider times out", "files": {"services/payments/retry.py": [88, 24]}}
+{"age_days": 11, "type": "deploy", "service": "checkout", "result": "rollback", "summary": "Checkout bundle release rolled back"}
+{"age_days": 12, "type": "incident", "service": "checkout", "severity": "sev2", "summary": "Checkout latency spiked while reserving bundles"}
+{"age_days": 14, "type": "commit", "author": "Jonah Adeyemi", "summary": "Log every retry attempt", "files": {"services/payments/retry.py": [36, 8]}}
+{"age_days": 15, "type": "review", "files": ["services/checkout/checkout.py"], "hours": 36, "summary": "Checkout review took 36 hours"}
+{"age_days": 18, "type": "commit", "author": "Mina Chen", "summary": "Thread the charge path into retries", "files": {"services/payments/charge.py": [70, 16]}}
+{"age_days": 22, "type": "commit", "author": "Mina Chen", "summary": "Reauth European cards on even attempts", "files": {"services/payments/retry.py": [120, 36]}}
+{"age_days": 27, "type": "commit", "author": "Andre Voss", "summary": "Reserve stock from checkout", "files": {"services/checkout/checkout.py": [84, 18]}}
+{"age_days": 33, "type": "commit", "author": "Priya Shah", "summary": "Round cart totals", "files": {"services/checkout/pricing.py": [28, 6]}}
+{"age_days": 36, "type": "commit", "author": "Andre Voss", "summary": "Surface provider errors on submit", "files": {"services/checkout/checkout.py": [48, 12]}}
+{"age_days": 40, "type": "review", "files": ["services/checkout/pricing.py"], "hours": 5, "summary": "Pricing review cleared in 5 hours"}
+{"age_days": 40, "type": "review", "files": ["services/inventory/stock.py"], "hours": 10, "summary": "Inventory review took 10 hours"}
+{"age_days": 41, "type": "commit", "author": "Sam Okonkwo", "summary": "Reject empty reservations", "files": {"services/inventory/stock.py": [55, 14]}}
+{"age_days": 45, "type": "commit", "author": "Mina Chen", "summary": "Treat pending charges as retryable", "files": {"services/payments/retry.py": [96, 28]}}
+{"age_days": 52, "type": "commit", "author": "Andre Voss", "summary": "Route checkout through the gateway", "files": {"services/gateway/main.py": [42, 9]}}
+{"age_days": 56, "type": "incident", "service": "payments", "severity": "sev1", "summary": "Duplicate captures during overlapping retries"}
+{"age_days": 56, "type": "deploy", "service": "payments", "result": "rollback", "summary": "Payments deploy rolled back after duplicate captures"}
+{"age_days": 58, "type": "commit", "author": "Jonah Adeyemi", "summary": "Look up users by name", "files": {"libs/common/db.py": [40, 8]}}
+{"age_days": 63, "type": "commit", "author": "Mina Chen", "summary": "Keep retrying declined European cards", "files": {"services/payments/retry.py": [64, 18]}}
+{"age_days": 70, "type": "commit", "author": "Priya Shah", "summary": "Guard negative quantities", "files": {"services/checkout/pricing.py": [18, 4]}}
+{"age_days": 74, "type": "commit", "author": "Sam Okonkwo", "summary": "Post receipts to the mail gateway", "files": {"services/notify/email.py": [32, 6]}}
+{"age_days": 80, "type": "commit", "author": "Andre Voss", "summary": "Support multi-seller carts", "files": {"services/checkout/checkout.py": [90, 22]}}
+{"age_days": 81, "type": "incident", "service": "notify", "severity": "sev3", "summary": "Receipt mail dropped during a provider timeout"}
+{"age_days": 86, "type": "commit", "author": "Jonah Adeyemi", "summary": "Share one service token", "files": {"libs/common/auth.py": [22, 4]}}
+{"age_days": 92, "type": "commit", "author": "Mina Chen", "summary": "Hook charges into the retry worker", "files": {"services/payments/charge.py": [38, 11]}}
+{"age_days": 100, "type": "commit", "author": "Sam Okonkwo", "summary": "Check bundle availability", "files": {"services/inventory/stock.py": [34, 9]}}
+{"age_days": 108, "type": "commit", "author": "Andre Voss", "summary": "Add gateway timeouts", "files": {"services/gateway/main.py": [16, 4]}}

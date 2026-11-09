@@ -1,0 +1,17 @@
+[project]
+name = "engineering-digital-twin"
+version = "0.1.0"
+description = "Explainable digital twin of a software engineering system."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+norecursedirs = ["examples", ".venv", "backend/data"]
