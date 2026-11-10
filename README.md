@@ -29,16 +29,21 @@ The header **Scan** field takes a folder on this machine, not a GitHub URL. An a
 | Time | Step through the system as it was 20, 40, 60 days ago. Imports, packages, plugins, pull requests, and test links hold over an interval. A dependency upgrade closes the previous version. A build failure is tied to the package the history names. |
 | Sync | **Check repository** compares the virtual twin with the folder and does not change it. **Apply** folds the difference in as events. Incidents you record stay on the twin. |
 | Risk radar | Filter bug, incident, delay, and performance indexes. |
+| Dependencies | See which packages carry risk from a build failure, a recent upgrade, a native plugin, or a missing manifest entry. Direct importers keep that index. Each further import hop keeps a smaller share. This does not move the other indexes. |
 | Forecast | Read the predicted failures, the p50–p90 count band, and the confidence interval on each call. Thin history and few recorded outcomes widen the band. |
+| Failures | Read the engineering failure a dependency points to. A recorded build failure, upgrade, or native binding forecasts a build failure. An undeclared import on an untested file forecasts a test failure. This is not the bug index and it is not a probability. |
 | Change lab | Tick the files a proposal would touch. The lab walks importers, then the tests, packages, plugins, and recorded build failures tied to those files. That path is evidence from the graph, not proof the change is safe. |
 | Scenarios | Run one hypothetical: tests, an extraction, a second owner, a circuit breaker, or a freeze. The repository is not edited. |
 | What if | Compare the decision that happened with each alternative, scored on its own. The lowest combined movement is marked preferred. |
+| Counterfactual | Withhold one recorded upgrade or build failure and see the dependency index move. Withholding an upgrade also removes a build failure that came after it. The bug index is not resimulated. |
 | Decide | Keep bug, incident, delay, and cycles separate. See which measurement would change the choice, and the plan if the failure lands or holds. |
+| Engine | One engineering action from the failure forecast and the counterfactual. Accuracy can block it. The repository is not edited. |
 | Council | Read findings from security, reliability, performance, quality, architecture, and delivery, in one sequence. |
 | Learning | Mark whether a predicted bug happened. Record an incident and the next score includes it. |
 | Loop | The closed loop. The policy ranks an action, you record what you did and whether it failed, and both the action value and the calibration update. |
 | Run | Start from the council plan. Agents that share a file wait. A safe measurement is recorded by the twin. Security, high severity, and wide changes wait for approval. A failed step comes back as a measurement. The repository is not edited. |
 | Fidelity | See whether imports bound, including unbound and dynamic ones. Deploys and incidents in history are production checks. A build or a test is kept and does not move the bug index. A production check updates the incident index only when its band does not cross 0.50. An action counts only when it sits between a failure and a later pass. A simulation is not evidence that a deploy will succeed. |
+| Accuracy | Compare predicted indexes with recorded outcomes and with production checks. A missed check or a thin history holds the decision engine. A forecast built from a recorded failure is not counted as a hit. |
 
 Beliefs, outcomes, and incidents are stored in `backend/data/twin.sqlite`. Delete that file to start over; the next launch scans Northwind again.
 

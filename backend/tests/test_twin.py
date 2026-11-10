@@ -113,6 +113,165 @@ def test_blast_radius_reaches_the_gateway(twin):
         assess_change(twin, ["missing.py"])
 
 
+def test_dependency_risk_decays_through_importers(twin):
+    report = twin["dependencies"]
+    psycopg = next(item for item in report["packages"] if item["name"] == "psycopg")
+    assert psycopg["risk"] > 0.7
+    assert psycopg["version"] == "3.2.1"
+    assert any(driver.startswith("Build failure") for driver in psycopg["drivers"])
+    assert any("libpq" in driver for driver in psycopg["drivers"])
+    assert "requests" not in {item["name"] for item in report["packages"]}
+    db = next(item for item in report["modules"] if item["module"] == "libs/common/db.py")
+    retry = next(item for item in report["modules"] if item["module"] == RETRY)
+    gateway = next(item for item in report["modules"] if item["module"] == GATEWAY)
+    assert db["depth"] == 0
+    assert retry["depth"] == 1
+    assert gateway["depth"] == 2
+    assert db["risk"] > retry["risk"] > gateway["risk"]
+    assert db["via"] == retry["via"] == "psycopg"
+    bug = next(module["risks"]["bug"] for module in twin["modules"] if module["path"] == RETRY)
+    assert bug > 0.8
+
+
+def test_scoped_npm_package_keeps_its_name():
+    from app.scan import _resolve
+
+    _local, external, _unresolved = _resolve(
+        {
+            "language": "typescript",
+            "raw_imports": [
+                "pkg:@react-native-async-storage/async-storage",
+                "pkg:@react-native-async-storage/async-storage/lib",
+                "pkg:react",
+            ],
+        },
+        {},
+        set(),
+    )
+    assert external == ["@react-native-async-storage/async-storage", "react"]
+
+
+def test_accuracy_blocks_the_engine_when_a_check_misses(twin):
+    accuracy = twin["accuracy"]
+    engine = twin["engine"]
+    assert accuracy["trust"] == "hold"
+    assert accuracy["reading"] == "contradicted"
+    assert accuracy["checks"]["missed"] + accuracy["checks"]["false_alarm"] >= 1
+    assert engine["proposal"]["action"] == "withhold_upgrade"
+    assert engine["status"] == "hold"
+    assert engine["action"] == "hold"
+    assert engine["writes_repository"] is False
+    assert "blocks it" in engine["because"]
+
+
+def test_a_ready_twin_can_add_tests_or_withhold_an_upgrade():
+    from app.accuracy import evaluate
+    from app.engine import decide
+
+    ready_view = {
+        "outcomes": [
+            {"predicted": 0.1, "happened": False, "kind": "bug"},
+            {"predicted": 0.12, "happened": False, "kind": "bug"},
+            {"predicted": 0.08, "happened": False, "kind": "bug"},
+        ],
+        "modules": [],
+        "forecast": {},
+        "engineering_failures": {
+            "failures": [
+                {"module": "app/a.py", "package": "leftpad", "mode": "test", "score": 0.4, "confidence": "low", "depth": 0}
+            ]
+        },
+        "counterfactual": {"cases": []},
+    }
+    accuracy = evaluate(ready_view, {"events": [], "modules": []})
+    assert accuracy["trust"] == "ready"
+    choice = decide(ready_view, accuracy)
+    assert choice["status"] == "act"
+    assert choice["action"] == "add_tests"
+    assert choice["writes_repository"] is False
+
+    build_view = {
+        **ready_view,
+        "engineering_failures": {
+            "failures": [
+                {"module": "libs/common/db.py", "package": "psycopg", "mode": "build", "score": 0.76, "confidence": "high", "depth": 0}
+            ]
+        },
+        "counterfactual": {
+            "cases": [
+                {
+                    "package": "psycopg",
+                    "factual": {"risk": 0.76},
+                    "worlds": [{"id": "withhold_upgrade", "delta": -0.6}],
+                }
+            ]
+        },
+    }
+    withheld = decide(build_view, accuracy)
+    assert withheld["status"] == "act"
+    assert withheld["action"] == "withhold_upgrade"
+    blocked = decide(build_view, {**accuracy, "trust": "hold", "summary": "Accuracy is contradicted."})
+    assert blocked["status"] == "hold"
+    assert blocked["proposal"]["action"] == "withhold_upgrade"
+
+
+def test_withholding_the_upgrade_removes_the_later_failure(twin):
+    report = twin["counterfactual"]
+    case = next(item for item in report["cases"] if item["package"] == "psycopg")
+    upgrade = next(world for world in case["worlds"] if world["id"] == "withhold_upgrade")
+    failure = next(world for world in case["worlds"] if world["id"] == "withhold_failure")
+    assert upgrade["risk"] < failure["risk"] < case["factual"]["risk"]
+    assert not any(driver.startswith("Build failure") or driver.startswith("Upgraded") for driver in upgrade["drivers"])
+    assert any(driver.startswith("Binds") for driver in upgrade["drivers"])
+    assert any(driver.startswith("Upgraded") for driver in failure["drivers"])
+    assert not any(driver.startswith("Build failure") for driver in failure["drivers"])
+    upgraded = {item["module"]: item for item in upgrade["modules"]}
+    db = upgraded["libs/common/db.py"]
+    retry = upgraded[RETRY]
+    assert db["after"] < db["before"]
+    assert retry["after"] < retry["before"]
+    assert retry["after"] < db["after"]
+    assert "not evidence" in report["note"]
+
+
+def test_engineering_failure_forecast_names_the_build(twin):
+    report = twin["engineering_failures"]
+    lead = report["failures"][0]
+    assert lead["mode"] == "build"
+    assert lead["package"] == "psycopg"
+    assert lead["module"] == "libs/common/db.py"
+    assert lead["low"] <= lead["score"] <= lead["high"]
+    assert lead["confidence"] == "high"
+    retry = next(item for item in report["failures"] if item["module"] == RETRY)
+    assert retry["mode"] == "build"
+    assert retry["score"] < lead["score"]
+    assert "not the bug index" in report["note"]
+    assert twin["forecast"]["by_module"][RETRY]["mode"] == "bug"
+
+
+def test_an_undeclared_import_propagates_one_hop():
+    from app.propagate import propagate
+
+    report = propagate(
+        {
+            "project": {"dependencies": []},
+            "modules": [
+                {"path": "app/a.py", "role": "code", "service": "app", "external_imports": ["leftpad"]},
+                {"path": "app/b.py", "role": "code", "service": "app", "external_imports": []},
+            ],
+            "edges": [{"source": "app/b.py", "target": "app/a.py"}],
+            "dynamics": {"facts": []},
+        }
+    )
+    assert report["packages"][0]["name"] == "leftpad"
+    assert report["packages"][0]["risk"] == 0.4
+    landed = {item["module"]: item for item in report["modules"]}
+    assert landed["app/a.py"]["depth"] == 0
+    assert landed["app/a.py"]["risk"] == 0.4
+    assert landed["app/b.py"]["depth"] == 1
+    assert landed["app/b.py"]["risk"] == 0.22
+
+
 def test_change_impact_follows_tests_packages_and_the_build(twin):
     impact = assess_change(twin, [RETRY])["impact"]
     kinds = {(path["kind"], path["object"]) for path in impact["paths"]}

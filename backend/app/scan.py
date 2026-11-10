@@ -446,10 +446,18 @@ def _resolve(module: dict, index: dict[str, str], known: set[str]) -> tuple[list
                 else:
                     unresolved.append(spec[5:])
             elif spec.startswith("pkg:"):
-                external.append(spec[4:].split("/")[0])
+                external.append(_npm_package(spec[4:]))
         elif language == "go" and not _stdlib(spec):
             external.append(spec.split("/")[0])
     return sorted(set(local)), sorted(set(external)), sorted(set(unresolved))
+
+
+def _npm_package(spec: str) -> str:
+    """npm package name, keeping the scope of `@scope/name` and dropping a subpath."""
+    parts = spec.split("/")
+    if spec.startswith("@") and len(parts) >= 2:
+        return "/".join(parts[:2])
+    return parts[0]
 
 
 def _lookup_dotted(spec: str, index: dict[str, str]) -> str | None:

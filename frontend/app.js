@@ -4,16 +4,21 @@ const TITLES = {
   time: ["Time", "The system, and the relations that held, as of a chosen day"],
   sync: ["Sync", "Keep the virtual twin consistent with the repository"],
   risks: ["Risk radar", "Bug, incident, delay, and performance indexes"],
+  dependencies: ["Dependencies", "How package risk reaches the modules that import it"],
   forecast: ["Forecast", "Predicted failures and how sure the twin is"],
+  failures: ["Failures", "The engineering failure a dependency points to"],
   change: ["Change lab", "What a change reaches: modules, tests, packages, and recorded failures"],
   scenarios: ["Scenarios", "Run a decision against the model"],
   whatif: ["What if", "Counterfactual simulation of decisions that were not taken"],
+  counterfactual: ["Counterfactual", "The engineering world in which one recorded fact did not happen"],
   decide: ["Decide", "Tradeoffs, the value of a measurement, and the next branch"],
+  engine: ["Engine", "One engineering action, gated by how accurate the twin is"],
   council: ["Council", "Specialized agents, sequenced into one plan"],
   learn: ["Learning", "Record outcomes and update beliefs"],
   loop: ["Loop", "Policy, calibration, and the next engineering action"],
   run: ["Run", "Agents, a safety gate, and a person on the governed steps"],
   fidelity: ["Fidelity", "What the twin has matched, and what is still unproven"],
+  accuracy: ["Accuracy", "How close the indexes are to recorded outcomes and production checks"],
 };
 
 const SCENARIOS = [
@@ -425,16 +430,21 @@ const VIEWS = {
   time: renderTime,
   sync: renderSync,
   risks: renderRisks,
+  dependencies: renderDependencies,
   forecast: renderForecast,
+  failures: renderFailures,
   change: renderChange,
   scenarios: renderScenarios,
   whatif: renderWhatIf,
+  counterfactual: renderCounterfactual,
   decide: renderDecide,
+  engine: renderEngine,
   council: renderCouncil,
   learn: renderLearn,
   loop: renderLoop,
   run: renderRun,
   fidelity: renderFidelity,
+  accuracy: renderAccuracy,
 };
 
 function renderSync(twin) {
@@ -615,6 +625,103 @@ function renderRisks(twin) {
       ${["all", ...kinds].map((kind) => `<button type="button" class="chip" data-action="kind" data-kind="${kind}" aria-pressed="${state.kind === kind}">${kind}</button>`).join("")}
     </div>
     <div class="list">${rows.map(riskRow).join("")}</div>`;
+}
+
+function renderAccuracy(twin) {
+  const report = twin.accuracy;
+  if (!report) return "<p class='muted'>Rescan the repository to evaluate accuracy.</p>";
+  const outcomes = report.outcomes || { bins: [] };
+  const checks = report.checks || {};
+  const bins = (outcomes.bins || []).map((band) => `<p class="path">${esc(band.name)} · ${band.n} outcome${band.n === 1 ? "" : "s"}<br/><span class="faint">${band.n ? `predicted ${fmt(band.predicted)} · observed ${fmt(band.observed)} · gap ${fmt(band.gap)}` : "No outcomes in this band."}</span></p>`).join("");
+  return `
+    <p class="narrative">${esc(report.note)}</p>
+    <p class="kicker fidelity ${esc({ contradicted: "contradicted", uncalibrated: "unvalidated", biased: "uncertain", thin: "uncertain", aligned: "supported" }[report.reading] || "unvalidated")}">${esc(report.trust)} · ${esc(report.reading)}</p>
+    <p>${esc(report.summary)}</p>
+    <div class="cols">
+      <section class="panel">
+        <p class="kicker">Recorded outcomes</p>
+        <p>${outcomes.n ? `${outcomes.n} outcomes · Brier ${fmt(outcomes.brier)} · ${outcomes.confirmed} confirmed` : "No outcomes yet."}</p>
+        <p class="muted">${esc(outcomes.note || "")}</p>
+        <div class="list">${bins}</div>
+      </section>
+      <section class="panel">
+        <p class="kicker">Production checks</p>
+        <p>${checks.n || 0} judged. Accuracy ${checks.accuracy == null ? "—" : fmt(checks.accuracy)}.</p>
+        <p class="muted">${checks.agreed || 0} agreed · ${checks.missed || 0} missed · ${checks.false_alarm || 0} false alarms · ${checks.uncertain || 0} uncertain · ${checks.recorded || 0} recorded.</p>
+      </section>
+    </div>`;
+}
+
+function renderEngine(twin) {
+  const report = twin.engine;
+  if (!report) return "<p class='muted'>Rescan the repository to run the decision engine.</p>";
+  const proposal = report.proposal || {};
+  return `
+    <p class="narrative">${esc(report.note)}</p>
+    <p class="kicker fidelity ${esc(report.trust === "ready" ? "supported" : report.trust === "measure" ? "uncertain" : "contradicted")}">${esc(report.status)}</p>
+    <p>${esc(report.because)}</p>
+    <section class="panel">
+      <p class="kicker">Engineering choice</p>
+      <p><strong>${esc(proposal.title || "None")}</strong></p>
+      <p class="muted">${esc(proposal.because || "")}</p>
+      <p class="faint">${proposal.module ? esc(proposal.module) : "No module"}${proposal.package ? ` · ${esc(proposal.package)}` : ""} · repository unchanged</p>
+    </section>`;
+}
+
+function renderFailures(twin) {
+  const report = twin.engineering_failures;
+  if (!report) return "<p class='muted'>Rescan the repository to forecast engineering failures.</p>";
+  const rows = report.failures || [];
+  return `
+    <p class="narrative">${esc(report.note)}</p>
+    <p>${esc(report.headline)}</p>
+    <div class="list">${rows.map((row) => `<article class="preset"><strong>${esc(row.mode_label)}</strong> <span class="tag">${esc(row.confidence)}</span><p class="path">${esc(short(row.module))} through ${esc(row.package)}${row.version ? `@${esc(row.version)}` : ""}</p><p class="mono">${fmt(row.score)} <span class="faint">band ${fmt(row.low)}–${fmt(row.high)} · depth ${row.depth}</span></p><p class="muted">${esc(row.statement)}</p><p class="faint">${row.drivers.map((driver) => esc(driver)).join(" · ")}</p></article>`).join("") || "<p class='muted'>No engineering failure is forecast.</p>"}</div>`;
+}
+
+function renderCounterfactual(twin) {
+  const report = twin.counterfactual;
+  if (!report) return "<p class='muted'>Rescan the repository to simulate a contrary engineering world.</p>";
+  const cases = report.cases || [];
+  return `
+    <p class="narrative">${esc(report.note)}</p>
+    ${cases.length ? `<p>${esc(report.summary)}</p>${cases.map(counterfactualCase).join("")}` : "<p class='muted'>No recorded upgrade or build failure can be withheld.</p>"}`;
+}
+
+function counterfactualCase(item) {
+  const version = item.version ? `@${item.version}` : "";
+  const worlds = (item.worlds || []).map((world) => `
+    <article class="preset">
+      <strong>${esc(world.title)}</strong>
+      <p>${esc(world.contrary_to)}</p>
+      <p class="mono">${fmt(item.factual.risk)} → ${fmt(world.risk)} <span class="${deltaTone(world.delta)}">${fmtDelta(world.delta)}</span></p>
+      <p class="faint">${world.drivers.map((driver) => esc(driver)).join(" · ") || "No package signal remains."}</p>
+      <div class="list">${world.modules.slice(0, 4).map((row) => `<p class="path">${esc(short(row.module))} · depth ${row.depth}<br/><span class="faint">${fmt(row.before)} → ${fmt(row.after)} <span class="${deltaTone(row.delta)}">${fmtDelta(row.delta)}</span></span></p>`).join("")}</div>
+    </article>`).join("");
+  return `
+    <section class="panel" style="margin-top:16px">
+      <p class="kicker">${esc(item.package)}${esc(version)} · factual ${fmt(item.factual.risk)}</p>
+      <div class="list">${worlds}</div>
+    </section>`;
+}
+
+function renderDependencies(twin) {
+  const report = twin.dependencies;
+  if (!report) return "<p class='muted'>Rescan the repository to propagate dependency risk.</p>";
+  const packages = report.packages || [];
+  const modules = report.modules || [];
+  return `
+    <p class="narrative">${esc(report.note)}</p>
+    <p>${esc(report.summary)}</p>
+    <div class="cols">
+      <section class="panel">
+        <p class="kicker">Packages</p>
+        <div class="list">${packages.map((item) => `<div class="row" style="grid-template-columns: 1fr 70px"><span><span class="path">${esc(item.name)}${item.version ? `@${esc(item.version)}` : ""}</span><br/><span class="faint">${item.drivers.map((driver) => esc(driver)).join(" · ") || "No driver"} · ${item.direct} direct · ${item.reaches} reached</span></span><span class="mono">${fmt(item.risk)}</span></div>`).join("") || "<p class='muted'>No package is carrying risk.</p>"}</div>
+      </section>
+      <section class="panel">
+        <p class="kicker">Where it lands</p>
+        <div class="list">${modules.map((item) => `<div class="row" style="grid-template-columns: 1fr 70px"><span><span class="path">${esc(item.module)}</span><br/><span class="faint">${item.depth === 0 ? "imports" : "through imports of"} ${esc(item.via)} · depth ${item.depth}</span></span><span class="mono">${fmt(item.risk)}</span></div>`).join("") || "<p class='muted'>The risk does not reach a module.</p>"}</div>
+      </section>
+    </div>`;
 }
 
 function renderChange(twin) {

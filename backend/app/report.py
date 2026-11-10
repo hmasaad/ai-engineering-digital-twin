@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from app.accuracy import evaluate
 from app.agents import ROSTER, analyze, coordinate
+from app.counterfactual import simulate
+from app.engine import decide
+from app.failures import predict
 from app.forecast import build_forecast
+from app.propagate import propagate
 from app.score import (
     FEATURE_ORDER,
     KNEES,
@@ -44,7 +49,7 @@ def build_twin(
     risks = _risks(modules)
     health = _health(modules, findings)
     totals = metrics(modules, edges)
-    return {
+    document = {
         "project": {
             "name": raw["name"],
             "root": raw["root"],
@@ -90,6 +95,12 @@ def build_twin(
         "forecast": build_forecast(modules, spread(modules), len(outcomes or [])),
         "signals": raw.get("signals") or {},
     }
+    document["dependencies"] = propagate(document)
+    document["engineering_failures"] = predict(document)
+    document["counterfactual"] = simulate(document)
+    document["accuracy"] = evaluate(document, raw)
+    document["engine"] = decide(document, document["accuracy"])
+    return document
 
 
 def _view_edges(modules: list[dict], edges: list[dict]) -> list[dict]:
