@@ -133,6 +133,97 @@ def test_dependency_risk_decays_through_importers(twin):
     assert bug > 0.8
 
 
+def test_a_weakness_propagates_with_severity_path_and_consequence(twin):
+    traces = {item["origin"]: item for item in twin["dependencies"]["traces"]}
+    auth = traces["libs/common/auth.py"]
+    assert auth["kind"] == "vulnerability"
+    assert auth["severity"] == "critical"
+    assert any(cause["label"].startswith("Hard-coded secret") for cause in auth["causes"])
+    gateway = next(item for item in auth["affected"] if item["module"] == GATEWAY)
+    origin = next(item for item in auth["affected"] if item["depth"] == 0)
+    assert gateway["path"] == ["libs/common/auth.py", GATEWAY]
+    assert gateway["depth"] == 1
+    assert gateway["severity_score"] < origin["severity_score"]
+    assert gateway["low"] <= gateway["likelihood"] <= gateway["high"]
+    assert "imports libs/common/auth.py" in gateway["consequence"]
+    assert "crosses common into gateway" in gateway["consequence"]
+    assert "process entry" in gateway["consequence"]
+
+    db = traces["libs/common/db.py"]
+    kinds = {cause["kind"] for cause in db["causes"]}
+    assert {"vulnerability", "failure", "dependency_change", "architecture"} <= kinds
+    retry = next(item for item in db["affected"] if item["module"] == RETRY)
+    assert retry["path"][0] == "libs/common/db.py"
+    assert retry["path"][-1] == RETRY
+    assert retry["depth"] == 1
+    assert retry["severity_score"] < db["severity_score"]
+    assert "payment retry" in retry["consequence"]
+    email = traces["services/notify/email.py"]
+    assert email["kind"] == "vulnerability"
+    assert [item["module"] for item in email["affected"]] == ["services/notify/email.py"]
+    assert all("requests" not in cause["label"] for cause in email["causes"])
+
+
+def test_propagation_algorithms_do_not_add_correlated_causes(twin):
+    report = twin["dependencies"]
+    psycopg = next(item for item in report["packages"] if item["name"] == "psycopg")
+    assert psycopg["risk"] == 0.7574
+    bug = next(module["risks"]["bug"] for module in twin["modules"] if module["path"] == RETRY)
+    assert bug > 0.8
+    steps = report["algorithms"]["steps"]
+    assert [step["title"] for step in steps] == [
+        "Graph-Based Risk Propagation Algorithms",
+        "Weighted Dependency Risk Modeling",
+        "Probabilistic Failure Propagation",
+        "Bayesian Network-Based Risk Inference",
+        "Cascading Failure and Fault Tree Analysis",
+        "Correlated Risk and Common-Cause Failure Modeling",
+        "Dynamic Risk Recalculation",
+        "Risk Containment and Mitigation Optimization",
+        "Uncertainty Quantification",
+        "Risk Propagation Evaluation and Calibration",
+    ]
+    graph, weighted, probabilistic, bayesian, tree, correlated, dynamic, containment, uncertainty, calibration = steps
+    auth_edge = next(edge for edge in graph["edges"] if edge["source"] == "libs/common/auth.py" and edge["target"] == GATEWAY)
+    assert auth_edge["depth"] == 1
+    assert "not added" in graph["summary"]
+    carried = next(edge for edge in weighted["edges"] if edge["source"] == "libs/common/auth.py")
+    assert carried["carried"] < carried["origin_index"]
+    assert "multiplies" in weighted["summary"]
+    db_rows = [row for row in probabilistic["rows_by_module"] if row["origin"] == "libs/common/db.py" and row["depth"] == 1]
+    stock = next(row for row in db_rows if row["module"] == STOCK)
+    retry = next(row for row in db_rows if row["module"] == RETRY)
+    assert stock["index"] < retry["index"]
+    assert "not a probability" in probabilistic["summary"]
+    assert bayesian["beliefs"][GATEWAY] < bayesian["sums"][GATEWAY]
+    assert "noisy-or" in bayesian["summary"]
+    assert any(item["source"] == STOCK and item["target"] == CHECKOUT for item in bayesian["dropped"])
+    assert tree["top"] == GATEWAY
+    assert "not added" in tree["rows"][0]["detail"]
+    assert correlated["indexes"]["libs/common/db.py"] == 0.917
+    assert correlated["indexes"]["libs/common/db.py"] < correlated["naive"]["libs/common/db.py"]
+    assert correlated["indexes"]["libs/common/auth.py"] == 0.62
+    assert correlated["indexes"][GATEWAY] < correlated["naive_sum"][GATEWAY]
+    package = next(family for family in correlated["families"] if family["key"] == "package:psycopg")
+    assert any(label.startswith("Upgraded") for label in package["conditions"])
+    assert package["label"].startswith("Build failure")
+    assert dynamic["focus"] == "libs/common/db.py"
+    assert dynamic["now"] == 0.917
+    assert dynamic["past"] == 0.834
+    assert dynamic["now"] > dynamic["past"]
+    assert containment["chosen"].startswith("Remove SQL injection")
+    assert containment["drop"] > 0
+    withheld = next(row for row in containment["rows"] if row["title"] == "Withhold the psycopg upgrade")
+    assert "does not move" in withheld["detail"]
+    assert uncertainty["point"] == correlated["indexes"]["libs/common/db.py"]
+    assert uncertainty["width"] == 0.22
+    assert uncertainty["low"] <= uncertainty["point"] <= uncertainty["high"]
+    assert calibration["reading"] == "uncalibrated"
+    assert calibration["package_risk"] == 0.7574
+    assert any(item["package"] == "psycopg" for item in calibration["excluded"])
+    assert "not a probability" in report["algorithms"]["note"]
+
+
 def test_scoped_npm_package_keeps_its_name():
     from app.scan import _resolve
 
@@ -234,6 +325,98 @@ def test_withholding_the_upgrade_removes_the_later_failure(twin):
     assert "not evidence" in report["note"]
 
 
+def test_a_decision_is_simulated_on_its_own_world(twin):
+    report = twin["counterfactual"]["decisions"]
+    assert report["writes_repository"] is False
+    scenarios = {item["id"]: item for item in report["scenarios"]}
+    upgrade = scenarios["withhold_upgrade"]
+    failure = scenarios["withhold_failure"]
+    world = next(
+        world
+        for case in twin["counterfactual"]["cases"]
+        if case["package"] == "psycopg"
+        for world in case["worlds"]
+        if world["id"] == "withhold_upgrade"
+    )
+    assert upgrade["before"] == 0.7574
+    assert upgrade["after"] == world["risk"]
+    assert upgrade["after"] < failure["after"] < upgrade["before"]
+    assert "bug index stays" in upgrade["assumption"]
+    assert upgrade["consequences"]
+    tests = scenarios["add_tests"]
+    assert tests["module"] == "libs/common/db.py"
+    assert tests["after"] == round(tests["before"] * 0.45, 4)
+    assert tests["after"] < tests["before"]
+    assert "package index stays" in tests["assumption"]
+    cut = scenarios["contain"]
+    step = next(step for step in twin["dependencies"]["algorithms"]["steps"] if step["order"] == 8)
+    assert cut["before"] == step["before"]
+    assert cut["after"] == step["after"]
+    assert cut["after"] < cut["before"]
+    assert "psycopg" in report["summary"]
+    assert "not a probability" in report["note"]
+    assert twin["engine"]["proposal"]["action"] == "withhold_upgrade"
+    bug = next(module["risks"]["bug"] for module in twin["modules"] if module["path"] == RETRY)
+    assert bug > 0.8
+
+
+def test_a_changed_variable_is_an_intervention_only_with_an_edge(twin):
+    report = twin["counterfactual"]["decisions"]
+    steps = report["algorithms"]["steps"]
+    assert [step["title"] for step in steps] == [
+        "Counterfactual State Modeling",
+        "What-If Scenario Generation",
+        "Structural Causal Models (SCMs)",
+        "Intervention-Based Causal Inference",
+        "Monte Carlo Engineering Simulation",
+        "Scenario-Based Risk Estimation",
+        "Sensitivity Analysis",
+        "Multi-Objective Scenario Optimization",
+        "Uncertainty-Aware Outcome Prediction",
+        "Counterfactual Outcome Evaluation",
+    ]
+    state, generated, model, interventions, monte, estimated, sensitivity, optimized, uncertainty, evaluation = steps
+    assert "not yet an intervention" in state["summary"]
+    assert any("not yet an intervention" in row["detail"] for row in generated["rows"])
+    edges = {(edge["source"], edge["target"]): edge["status"] for edge in model["edges"]}
+    assert edges[("psycopg upgrade", "psycopg build failure")] == "assumed"
+    assert edges[("test gap", "dependency index")] == "absent"
+    acted = {item["id"]: item["status"] for item in interventions["interventions"]}
+    assert acted["withhold_upgrade"] == "intervention"
+    assert acted["withhold_failure"] == "intervention"
+    assert acted["add_tests"] == "intervention"
+    assert any(row["title"] == "bug index" and "association" in row["detail"] for row in interventions["rows"])
+    upgrade = next(item for item in report["scenarios"] if item["id"] == "withhold_upgrade")
+    draw = monte["draws"]["withhold_upgrade"]
+    assert draw["trials"] == 200
+    assert draw["seed"] == 7
+    assert abs(draw["p50"] - upgrade["after"]) <= draw["width"]
+    assert "forecast spread" in monte["summary"]
+    assert "not added" in estimated["summary"]
+    assert sensitivity["checks"]
+    assert all(item["stable"] for item in sensitivity["checks"])
+    chosen = {item["index"]: item["id"] for item in optimized["chosen"]}
+    assert chosen["dependency"] == "withhold_upgrade"
+    assert "regret score" in optimized["summary"]
+    assert uncertainty["scenario"] == "withhold_upgrade"
+    assert uncertainty["point"] == upgrade["after"]
+    assert uncertainty["width"] == 0.16
+    assert uncertainty["low"] <= uncertainty["point"] <= uncertainty["high"]
+    assert evaluation["reading"] == "unvalidated"
+    assert any(item["package"] == "psycopg" for item in evaluation["excluded"])
+    assert evaluation["assumed"] >= 1
+    world = next(
+        world
+        for case in twin["counterfactual"]["cases"]
+        if case["package"] == "psycopg"
+        for world in case["worlds"]
+        if world["id"] == "withhold_upgrade"
+    )
+    assert upgrade["after"] == world["risk"]
+    psycopg = next(item for item in twin["dependencies"]["packages"] if item["name"] == "psycopg")
+    assert psycopg["risk"] == 0.7574
+
+
 def test_engineering_failure_forecast_names_the_build(twin):
     report = twin["engineering_failures"]
     lead = report["failures"][0]
@@ -247,6 +430,99 @@ def test_engineering_failure_forecast_names_the_build(twin):
     assert retry["score"] < lead["score"]
     assert "not the bug index" in report["note"]
     assert twin["forecast"]["by_module"][RETRY]["mode"] == "bug"
+
+
+def test_history_answers_the_seven_failure_questions(twin):
+    report = twin["predictions"]
+    questions = {item["id"]: item for item in report["questions"]}
+    assert [item["id"] for item in report["questions"]] == [
+        "bugs",
+        "pull_requests",
+        "builds",
+        "dependencies",
+        "releases",
+        "incidents",
+        "debt",
+    ]
+    bugs = questions["bugs"]["rows"][0]
+    retry = next(module for module in twin["modules"] if module["path"] == RETRY)
+    assert bugs["title"] == RETRY
+    assert bugs["index"] == retry["risks"]["bug"]
+    pull = questions["pull_requests"]["rows"][0]
+    assert pull["title"] == "Pull request 84"
+    assert pull["index"] == retry["risks"]["bug"]
+    assert "tests/test_payments.py" in pull["detail"]
+    assert "not in the tree" in pull["detail"]
+    build = questions["builds"]["rows"][0]
+    failure = twin["engineering_failures"]["failures"][0]
+    assert build["title"] == "psycopg"
+    assert build["index"] == failure["score"]
+    assert "not a confirmation" in build["detail"]
+    unstable = {row["title"] for row in questions["dependencies"]["rows"]}
+    assert unstable == {"psycopg"}
+    assert questions["dependencies"]["rows"][0]["index"] == next(
+        item["risk"] for item in twin["dependencies"]["packages"] if item["name"] == "psycopg"
+    )
+    releases = questions["releases"]["rows"]
+    assert any(row["observed"] == "rollback" and row["title"].startswith("checkout") for row in releases)
+    assert any(row["observed"] == "success" and row["title"].startswith("payments") for row in releases)
+    incident = questions["incidents"]["rows"][0]
+    assert incident["title"] == RETRY
+    assert incident["index"] == retry["risks"]["incident"]
+    assert "Duplicate captures" in incident["detail"]
+    debt = questions["debt"]["rows"][0]
+    assert debt["title"] == RETRY
+    assert debt["index"] == retry["debt"]
+    assert debt["detail"].endswith(twin["forecast"]["by_module"][RETRY]["horizon"] + ".") or twin["forecast"]["by_module"][RETRY]["horizon"] in debt["detail"]
+    assert "calibrated probability" in report["note"]
+    assert twin["engineering_failures"]["failures"][0]["module"] == "libs/common/db.py"
+
+
+def test_failure_algorithms_read_the_index_without_refitting_it(twin):
+    report = twin["predictions"]
+    steps = report["algorithms"]["steps"]
+    assert [step["title"] for step in steps] == [
+        "Engineering Failure Feature Engineering",
+        "Temporal and Sequential Failure Modeling",
+        "Software Defect Prediction Models",
+        "Pull Request Regression Prediction",
+        "Build Failure Prediction",
+        "Graph Neural Networks for Dependency-Aware Failure Prediction",
+        "Survival Analysis and Time-to-Failure Prediction",
+        "Bayesian Failure Probability Estimation",
+        "Uncertainty Quantification and Prediction Calibration",
+        "Explainable AI for Engineering Failure Predictions",
+        "Concept Drift Detection and Model Retraining",
+        "Online Prediction Evaluation",
+    ]
+    features, temporal, defect, pull, build, graph, survival, bayes, uncertainty, explanation, drift, evaluation = steps
+    retry = next(module for module in twin["modules"] if module["path"] == RETRY)
+    assert features["module"] == RETRY
+    assert features["values"]["test_gap"] == retry["test_gap"]
+    assert temporal["recent"] >= 1
+    assert defect["point"] == retry["risks"]["bug"]
+    assert "not refit" in defect["summary"]
+    assert pull["point"] == retry["risks"]["bug"]
+    assert build["point"] == twin["engineering_failures"]["failures"][0]["score"]
+    assert build["package"] == "psycopg"
+    assert "not a confirmation" in build["summary"]
+    assert graph["point"] == retry["risks"]["bug"]
+    assert graph["neighbor_mean"] != graph["point"]
+    assert any(item["module"] == "libs/common/db.py" for item in graph["neighbors"])
+    assert "not a trained network" in graph["summary"]
+    assert survival["days"] == 56
+    assert bayes["prior"] == retry["risks"]["bug"]
+    assert bayes["posterior"] == bayes["prior"]
+    assert uncertainty["reading"] == "uncalibrated"
+    assert uncertainty["width"] == 0.12
+    assert uncertainty["point"] == retry["risks"]["bug"]
+    assert RETRY in explanation["summary"]
+    assert drift["retrained"] is False
+    assert drift["recent"] >= 1
+    assert "learning rate" in drift["summary"]
+    assert evaluation["reading"] == "unvalidated"
+    assert any(item["package"] == "psycopg" for item in evaluation["excluded"])
+    assert report["questions"][0]["rows"][0]["index"] == retry["risks"]["bug"]
 
 
 def test_an_undeclared_import_propagates_one_hop():
@@ -289,6 +565,145 @@ def test_change_impact_follows_tests_packages_and_the_build(twin):
     assert package["via"] == "imported by this file"
     assert any(path["kind"] == "plugin" and path["object"] == "libpq" for path in driver["paths"])
     assert not any(path["kind"] == "failure" for path in driver["paths"])
+
+
+def test_change_analysis_answers_what_the_edit_reaches(twin):
+    report = assess_change(twin, [RETRY], title="Change retry backoff")
+    analysis = report["analysis"]
+    assert analysis["change_risk"] == report["risk"]
+    assert analysis["delivery"] == report["delay_pressure"]
+    assert report["risk"] > 0.2
+    components = {item["module"] for item in analysis["components"]}
+    assert {RETRY, CHARGE, CHECKOUT, GATEWAY} <= components
+    broken = {item["name"] for item in analysis["dependencies"]}
+    assert "psycopg" in broken
+    assert "requests" not in broken
+    psycopg = next(item for item in analysis["dependencies"] if item["name"] == "psycopg")
+    assert psycopg["may_break"] is True
+    assert psycopg["risk"] > 0.7
+    assert "Build failure" in psycopg["why"]
+    calls = {(item["caller"], item["callee"], item["direction"]) for item in analysis["apis"]}
+    assert (CHECKOUT, CHARGE, "inbound") in calls
+    assert (GATEWAY, CHARGE, "inbound") in calls
+    assert (RETRY, "libs/common/db.py", "outbound") in calls
+    services = {item["name"]: item["role"] for item in analysis["services"]}
+    assert services["payments"] == "edited"
+    assert services["checkout"] == "affected"
+    assert services["common"] == "called"
+    named = next(item for item in analysis["tests"] if item["path"] == "tests/test_payments.py")
+    assert named["in_tree"] is False
+    assert named["reason"] == "named by a pull request"
+    assert RETRY in analysis["uncovered"]
+    regressions = {item["module"] for item in analysis["regressions"]}
+    assert {CHARGE, CHECKOUT, GATEWAY} <= regressions
+    assert RETRY not in regressions
+    questions = [item["question"] for item in analysis["answers"]]
+    assert questions == [
+        "Which components will be affected?",
+        "Which dependencies may break?",
+        "Which APIs or services are impacted?",
+        "Which tests should be executed?",
+        "Which other modules might experience regressions?",
+        "What is the potential delivery and operational risk?",
+    ]
+    joined = " ".join(item["answer"] for item in analysis["answers"])
+    assert "psycopg" in joined
+    assert "tests/test_payments.py" in joined
+    assert f"{report['risk']:.2f}" in joined
+    incidents = [
+        module["risks"]["incident"]
+        for module in twin["modules"]
+        if module["path"] in components
+    ]
+    assert analysis["operational"] == round(max(incidents), 4)
+
+    pricing = assess_change(twin, [PRICING])["analysis"]
+    assert any(item["path"] == "tests/test_pricing.py" and item["in_tree"] for item in pricing["tests"])
+    assert PRICING not in pricing["uncovered"]
+    assert "psycopg" not in {item["name"] for item in pricing["dependencies"]}
+    assert "requests" not in {item["name"] for item in pricing["dependencies"]}
+
+
+def test_change_engines_cite_the_file_and_the_graph(twin):
+    report = assess_change(twin, [RETRY])
+    engines = report["engines"]
+    assert set(engines) >= {
+        "detection",
+        "traversal",
+        "propagation",
+        "semantic",
+        "tests",
+        "risk",
+        "explanation",
+        "provenance",
+    }
+    survival = 1.0
+    for item in report["blast"]:
+        exposure = 1.0 if item["depth"] == 0 else 0.55 / item["depth"]
+        local = item["bug"] * (0.4 + 0.6 * item["test_gap"]) * exposure
+        survival *= 1.0 - max(0.0, min(0.9, local))
+    assert report["risk"] == round(1.0 - survival, 4)
+    assert engines["risk"]["change_risk"] == report["risk"]
+    detected = " ".join(row["title"] + " " + row["detail"] for row in engines["detection"]["rows"])
+    assert RETRY in detected
+    assert "retry_charge" in detected
+    assert "psycopg" in detected
+    assert "Leave payment retries uncapped" in engines["semantic"]["summary"]
+    links = " ".join(row["detail"] for row in engines["traversal"]["rows"])
+    assert any(row["title"] == CHARGE and "direct importer" in row["detail"] for row in engines["traversal"]["rows"])
+    assert any(row["title"] == GATEWAY and "indirect importer" in row["detail"] for row in engines["traversal"]["rows"])
+    assert any(row["title"] == "libs/common/db.py" and "direct dependency" in row["detail"] for row in engines["traversal"]["rows"])
+    assert links
+    charge = next(row for row in engines["explanation"]["rows"] if row["title"] == CHARGE)
+    assert "imports" in charge["detail"]
+    assert RETRY in charge["detail"]
+    cited = " ".join(row["title"] + " " + row["detail"] for row in engines["provenance"]["rows"])
+    assert "retry_charge" in cited
+    assert CHARGE in cited and RETRY in cited
+    assert any(row["kind"] == "score" for row in engines["provenance"]["rows"])
+    assert any(row["title"] == "tests/test_payments.py" for row in engines["tests"]["rows"])
+    assert any(row["title"] == RETRY and "no test covers" in row["detail"] for row in engines["tests"]["rows"])
+
+    charge_report = assess_change(twin, [CHARGE])
+    charge_detected = " ".join(row["title"] for row in charge_report["engines"]["detection"]["rows"])
+    assert "_DemoProvider" in charge_detected
+    assert "charge_order" in charge_detected
+
+
+def test_change_algorithms_run_from_the_graph_to_the_band(twin):
+    report = assess_change(twin, [RETRY])
+    steps = report["algorithms"]["steps"]
+    assert [step["order"] for step in steps] == list(range(1, 9))
+    assert [step["title"] for step in steps] == [
+        "Static dependency analysis and graph traversal",
+        "Transitive dependency and impact propagation",
+        "Change coupling analysis",
+        "Semantic code change understanding",
+        "Probabilistic impact prediction",
+        "Test selection optimization",
+        "Uncertainty-aware risk scoring",
+        "Evidence-based impact explanation",
+    ]
+    graph = " ".join(row["title"] + " " + row["detail"] for row in steps[0]["rows"])
+    assert f"{CHARGE} imports {RETRY}" in graph
+    assert "direct" in graph and "transitive" in graph
+    assert f"{RETRY} imports libs/common/db.py" in graph
+    assert GATEWAY in graph
+    assert CHARGE in steps[1]["summary"]
+    assert "0.50" in steps[2]["summary"]
+    assert any(row["title"] == CHARGE and "Mina Chen" in row["detail"] for row in steps[2]["rows"])
+    assert "shared behavior" in steps[3]["summary"]
+    assert "retry_charge" in steps[3]["summary"]
+    assert "Leave payment retries uncapped" in steps[3]["summary"]
+    predicted = next(row for row in steps[4]["rows"] if row["title"] == CHARGE)
+    assert "impact index" in predicted["detail"] and "band" in predicted["detail"]
+    assert f"The first test to add is {RETRY}" in steps[5]["summary"]
+    assert any(row["title"] == "tests/test_payments.py" for row in steps[5]["rows"])
+    assert f"{report['risk']:.2f}" in steps[6]["summary"]
+    assert report["engines"]["risk"]["change_risk"] == report["risk"]
+    explained = next(row for row in steps[7]["rows"] if row["title"] == CHARGE)
+    assert f"{CHARGE} imports {RETRY}" in explained["detail"]
+    assert "Co-change" in explained["detail"]
 
 
 def test_scenarios_move_the_indexes(raw):

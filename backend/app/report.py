@@ -7,8 +7,10 @@ from collections import defaultdict
 from app.accuracy import evaluate
 from app.agents import ROSTER, analyze, coordinate
 from app.counterfactual import simulate
+from app.decision_sim import simulate_decisions
 from app.engine import decide
 from app.failures import predict
+from app.predict import answer as predict_answers
 from app.forecast import build_forecast
 from app.propagate import propagate
 from app.score import (
@@ -97,7 +99,9 @@ def build_twin(
     }
     document["dependencies"] = propagate(document)
     document["engineering_failures"] = predict(document)
+    document["predictions"] = predict_answers(document)
     document["counterfactual"] = simulate(document)
+    document["counterfactual"]["decisions"] = simulate_decisions(document)
     document["accuracy"] = evaluate(document, raw)
     document["engine"] = decide(document, document["accuracy"])
     return document

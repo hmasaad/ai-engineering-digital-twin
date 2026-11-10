@@ -2,14 +2,18 @@
 
 The import walk says which modules would notice the edit. The engineering
 impact follows that edit through tests, packages, native plugins, and a
-recorded build failure. A path is evidence from the graph, not proof the
-change is safe.
+recorded build failure. The analysis answers which components, dependencies,
+APIs, tests, regressions, and delivery risk that walk implies. A path is
+evidence from the graph, not proof the change is safe. The change risk index
+is the blast-radius figure and is not recomputed here.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 
+from app.change_algorithms import run_algorithms
+from app.change_engine import blast_risk, run_engines
 from app.graph import adjacency, reachable
 from app.temporal import holds
 
@@ -39,11 +43,7 @@ def assess_change(view: dict, modules: list[str], title: str = "Proposed change"
             }
         )
 
-    survival = 1.0
-    for item in blast:
-        exposure = 1.0 if item["depth"] == 0 else 0.55 / item["depth"]
-        local = item["bug"] * (0.4 + 0.6 * item["test_gap"]) * exposure
-        survival *= 1.0 - max(0.0, min(0.9, local))
+    risk, _pressures = blast_risk(blast)
     touched = {item["module"] for item in blast}
     objections = [
         {
@@ -81,10 +81,10 @@ def assess_change(view: dict, modules: list[str], title: str = "Proposed change"
     if note:
         sentences.append(note)
 
-    return {
+    report = {
         "title": title,
         "note": note,
-        "risk": round(1.0 - survival, 4),
+        "risk": risk,
         "delay_pressure": round(max(item["delay"] for item in blast if item["depth"] == 0), 4),
         "blast": blast,
         "missing_tests": missing_tests,
@@ -94,6 +94,349 @@ def assess_change(view: dict, modules: list[str], title: str = "Proposed change"
         "recommendation": " ".join(sentences),
         "impact": impact,
     }
+    report["analysis"] = analyze_change(view, modules, report)
+    report["engines"] = run_engines(view, modules, report)
+    report["algorithms"] = run_algorithms(view, modules, report)
+    return report
+
+
+def analyze_change(view: dict, modules: list[str], report: dict) -> dict:
+    """Six answers about a change, read from the blast and the graph."""
+    by_path = {module["path"]: module for module in view["modules"]}
+    blast = report["blast"]
+    selected = set(modules)
+    components = [
+        {
+            "module": item["module"],
+            "service": item["service"],
+            "depth": item["depth"],
+            "relation": item["relation"],
+        }
+        for item in blast
+    ]
+    dependencies = _breakable(view, modules)
+    apis = _apis(view, by_path, blast, selected)
+    services = _services(blast, apis)
+    tests, uncovered = _tests(view, by_path, blast, selected, report["impact"])
+    regressions = _regressions(blast)
+    delivery = report["delay_pressure"]
+    delay_module = _delay_module(blast)
+    operational, operational_module = _operational(by_path, blast)
+    analysis = {
+        "components": components,
+        "dependencies": dependencies,
+        "services": services,
+        "apis": apis,
+        "tests": tests,
+        "uncovered": uncovered,
+        "regressions": regressions,
+        "delivery": delivery,
+        "delay_module": delay_module,
+        "operational": operational,
+        "operational_module": operational_module,
+        "change_risk": report["risk"],
+        "note": (
+            "The answers read the blast, the import graph, recorded tests, and the indexes already on the twin. "
+            "The change risk index is the blast-radius figure. "
+            "A path is evidence from the graph, not proof the change is safe."
+        ),
+    }
+    analysis["answers"] = _answers(analysis)
+    return analysis
+
+
+def _breakable(view: dict, modules: list[str]) -> list[dict]:
+    names, via = _packages_used({module["path"]: module for module in view["modules"]}, modules)
+    published = {
+        item["name"]: item
+        for item in ((view.get("dependencies") or {}).get("packages") or [])
+        if item.get("name")
+    }
+    declared = set((view.get("project") or {}).get("dependencies") or [])
+    rows = []
+    for name in sorted(names):
+        record = published.get(name)
+        drivers = list((record or {}).get("drivers") or [])
+        missing = name not in declared
+        if record is None and not missing:
+            continue
+        if record is not None and not drivers and not missing:
+            continue
+        if missing and "Imported and missing from the manifest" not in drivers:
+            drivers.append("Imported and missing from the manifest")
+        rows.append(
+            {
+                "name": name,
+                "version": (record or {}).get("version") or "",
+                "risk": None if record is None else record.get("risk"),
+                "may_break": True,
+                "why": " · ".join(drivers),
+                "via": via.get(name) or "",
+            }
+        )
+    rows.sort(key=lambda item: (-(item["risk"] if item["risk"] is not None else -1), item["name"]))
+    return rows[:8]
+
+
+def _apis(view: dict, by_path: dict, blast: list[dict], selected: set[str]) -> list[dict]:
+    reached = {item["module"] for item in blast}
+    rows = []
+    seen: set[tuple[str, str]] = set()
+    for edge in view.get("edges") or []:
+        caller = edge.get("source")
+        callee = edge.get("target")
+        if caller not in by_path or callee not in by_path:
+            continue
+        caller_service = by_path[caller]["service"]
+        callee_service = by_path[callee]["service"]
+        if caller_service == callee_service:
+            continue
+        inbound = callee in reached and caller not in selected
+        outbound = caller in selected
+        if not inbound and not outbound:
+            continue
+        key = (caller, callee)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "caller": caller,
+                "callee": callee,
+                "from_service": caller_service,
+                "to_service": callee_service,
+                "direction": "outbound" if caller in selected else "inbound",
+            }
+        )
+    rows.sort(key=lambda item: (item["direction"] != "inbound", item["caller"], item["callee"]))
+    return rows[:12]
+
+
+def _services(blast: list[dict], apis: list[dict]) -> list[dict]:
+    grouped: dict[str, list[str]] = {}
+    depth0: set[str] = set()
+    for item in blast:
+        grouped.setdefault(item["service"], [])
+        if item["module"] not in grouped[item["service"]]:
+            grouped[item["service"]].append(item["module"])
+        if item["depth"] == 0:
+            depth0.add(item["service"])
+    rows = [
+        {
+            "name": name,
+            "role": "edited" if name in depth0 else "affected",
+            "modules": modules,
+        }
+        for name, modules in grouped.items()
+    ]
+    present = {row["name"] for row in rows}
+    for api in apis:
+        if api["direction"] != "outbound" or api["to_service"] in present:
+            continue
+        present.add(api["to_service"])
+        rows.append({"name": api["to_service"], "role": "called", "modules": [api["callee"]]})
+    rows.sort(key=lambda item: ({"edited": 0, "affected": 1, "called": 2}[item["role"]], item["name"]))
+    return rows
+
+
+def _tests(
+    view: dict,
+    by_path: dict,
+    blast: list[dict],
+    selected: set[str],
+    impact: dict,
+) -> tuple[list[dict], list[str]]:
+    reached = {item["module"] for item in blast}
+    facts = ((view.get("dynamics") or {}).get("facts")) or []
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for fact in facts:
+        if fact.get("predicate") != "covers" or fact.get("object") not in reached or not holds(fact, 0):
+            continue
+        path = str(fact.get("subject") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        rows.append(
+            {
+                "path": path,
+                "target": str(fact.get("object") or ""),
+                "reason": "imports the affected module",
+                "in_tree": path in by_path,
+            }
+        )
+    for path_row in impact.get("paths") or []:
+        if path_row.get("kind") != "test":
+            continue
+        path = path_row["subject"] if path_row.get("via") == "test imports this file" else str(path_row.get("object") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        rows.append(
+            {
+                "path": path,
+                "target": str(path_row.get("object") or "") if path_row.get("via") == "test imports this file" else "",
+                "reason": "named by a pull request" if path_row.get("via") != "test imports this file" else "imports the affected module",
+                "in_tree": path in by_path,
+            }
+        )
+    rows.sort(key=lambda item: (not item["in_tree"], item["path"]))
+    covered = {row["target"] for row in rows if row["in_tree"] and row["target"]}
+    uncovered = [
+        path
+        for path in _edited(blast, selected)
+        if by_path[path]["test_gap"] >= 0.5 and path not in covered
+    ]
+    return rows[:12], uncovered
+
+
+def _edited(blast: list[dict], selected: set[str]) -> list[str]:
+    return [item["module"] for item in blast if item["module"] in selected]
+
+
+def _regressions(blast: list[dict]) -> list[dict]:
+    downstream = [item for item in blast if item["depth"] > 0]
+    downstream.sort(key=lambda item: (-item["bug"], item["depth"], item["module"]))
+    return [
+        {
+            "module": item["module"],
+            "service": item["service"],
+            "depth": item["depth"],
+            "bug": item["bug"],
+            "test_gap": item["test_gap"],
+            "why": "Imports an edited file." if item["depth"] == 1 else "Imports a module this change reaches.",
+        }
+        for item in downstream[:8]
+    ]
+
+
+def _delay_module(blast: list[dict]) -> str:
+    edited = [item for item in blast if item["depth"] == 0]
+    if not edited:
+        return ""
+    return max(edited, key=lambda item: item["delay"])["module"]
+
+
+def _operational(by_path: dict, blast: list[dict]) -> tuple[float, str]:
+    if not blast:
+        return 0.0, ""
+    lead = max(
+        blast,
+        key=lambda item: (by_path[item["module"]]["risks"]["incident"], item["module"]),
+    )
+    score = by_path[lead["module"]]["risks"]["incident"]
+    return round(float(score), 4), lead["module"]
+
+
+def _answers(analysis: dict) -> list[dict]:
+    return [
+        {"question": "Which components will be affected?", "answer": _component_answer(analysis["components"])},
+        {"question": "Which dependencies may break?", "answer": _dependency_answer(analysis["dependencies"])},
+        {"question": "Which APIs or services are impacted?", "answer": _api_answer(analysis["services"], analysis["apis"])},
+        {
+            "question": "Which tests should be executed?",
+            "answer": _test_answer(analysis["tests"], analysis["uncovered"]),
+        },
+        {"question": "Which other modules might experience regressions?", "answer": _regression_answer(analysis)},
+        {
+            "question": "What is the potential delivery and operational risk?",
+            "answer": _risk_answer(analysis),
+        },
+    ]
+
+
+def _component_answer(components: list[dict]) -> str:
+    edited = [item["module"] for item in components if item["depth"] == 0]
+    downstream = [item["module"] for item in components if item["depth"] > 0]
+    sentence = f"The edit touches {_join(edited)}."
+    if not downstream:
+        return sentence + " No other module imports these files."
+    shown = downstream[:5]
+    extra = len(downstream) - len(shown)
+    if extra:
+        tail = ", ".join(shown) + f", and {extra} more"
+    else:
+        tail = _join(shown)
+    return f"{sentence} Importers that can see it: {tail}."
+
+
+def _dependency_answer(dependencies: list[dict]) -> str:
+    if not dependencies:
+        return "No package used by these files has a recorded failure, upgrade, native plugin, or undeclared import."
+    bits = []
+    for item in dependencies:
+        version = f" {item['version']}" if item.get("version") else ""
+        why = item["why"] or "carries a dependency signal"
+        bits.append(f"{item['name']}{version} ({why})")
+    return "These dependencies may break: " + "; ".join(bits) + "."
+
+
+def _api_answer(services: list[dict], apis: list[dict]) -> str:
+    edited = [item["name"] for item in services if item["role"] == "edited"]
+    affected = [item["name"] for item in services if item["role"] == "affected"]
+    called = [item["name"] for item in services if item["role"] == "called"]
+    sentence = f"Services on the edit: {_join(edited) or 'none'}."
+    if affected:
+        sentence += f" Services downstream: {_join(affected)}."
+    if called:
+        sentence += f" The edit calls {_join(called)}."
+    if not apis:
+        return sentence + " No cross-service call leaves or enters the blast."
+    shown = apis[:6]
+    calls = "; ".join(f"{item['caller']} calls {item['callee']}" for item in shown)
+    extra = len(apis) - len(shown)
+    if extra:
+        calls = f"{calls}; and {extra} more"
+    return f"{sentence} Cross-service calls: {calls}."
+
+
+def _test_answer(tests: list[dict], uncovered: list[str]) -> str:
+    if tests:
+        bits = []
+        for item in tests:
+            place = "in the tree" if item["in_tree"] else "named in history, and the file is not in the tree"
+            bits.append(f"{item['path']} ({item['reason']}, {place})")
+        sentence = "Run " + "; ".join(bits) + "."
+    else:
+        sentence = "No covering test and no recorded test name is tied to this change."
+    if uncovered:
+        sentence += f" No test covers {_join(uncovered)}."
+    return sentence
+
+
+def _regression_answer(analysis: dict) -> str:
+    downstream = [item for item in analysis["components"] if item["depth"] > 0]
+    regressions = analysis["regressions"]
+    if not regressions:
+        return "No importer sits downstream of the edit."
+    bits = []
+    for item in regressions[:5]:
+        coverage = ", untested" if item["test_gap"] >= 0.5 else ""
+        bits.append(f"{item['module']} (bug {item['bug']:.2f}{coverage})")
+    sentence = "Downstream modules, highest bug index first: " + "; ".join(bits)
+    extra = len(downstream) - len(regressions[:5])
+    if extra > 0:
+        sentence += f"; and {extra} more"
+    return sentence + "."
+
+
+def _risk_answer(analysis: dict) -> str:
+    return (
+        f"Delivery delay index on the edited files is {analysis['delivery']:.2f} on {analysis['delay_module']}. "
+        f"The highest incident index in the blast is {analysis['operational']:.2f} on {analysis['operational_module']}. "
+        f"The change risk index is {analysis['change_risk']:.2f}. "
+        "These are the indexes already on the twin."
+    )
+
+
+def _join(names: list[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + ", and " + names[-1]
 
 
 def engineering_impact(view: dict, modules: list[str]) -> dict:

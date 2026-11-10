@@ -4,13 +4,13 @@ const TITLES = {
   time: ["Time", "The system, and the relations that held, as of a chosen day"],
   sync: ["Sync", "Keep the virtual twin consistent with the repository"],
   risks: ["Risk radar", "Bug, incident, delay, and performance indexes"],
-  dependencies: ["Dependencies", "How package risk reaches the modules that import it"],
+  dependencies: ["Dependencies", "Ten algorithms follow direction, common causes, and the band"],
   forecast: ["Forecast", "Predicted failures and how sure the twin is"],
-  failures: ["Failures", "The engineering failure a dependency points to"],
-  change: ["Change lab", "What a change reaches: modules, tests, packages, and recorded failures"],
+  failures: ["Failures", "Seven questions from recorded history, read off the indexes already on the twin"],
+  change: ["Change lab", "Eight algorithms walk the graph, co-changes, tests, and the uncertainty band"],
   scenarios: ["Scenarios", "Run a decision against the model"],
   whatif: ["What if", "Counterfactual simulation of decisions that were not taken"],
-  counterfactual: ["Counterfactual", "The engineering world in which one recorded fact did not happen"],
+  counterfactual: ["Counterfactual", "What a different engineering decision would change"],
   decide: ["Decide", "Tradeoffs, the value of a measurement, and the next branch"],
   engine: ["Engine", "One engineering action, gated by how accurate the twin is"],
   council: ["Council", "Specialized agents, sequenced into one plan"],
@@ -675,7 +675,25 @@ function renderFailures(twin) {
   return `
     <p class="narrative">${esc(report.note)}</p>
     <p>${esc(report.headline)}</p>
-    <div class="list">${rows.map((row) => `<article class="preset"><strong>${esc(row.mode_label)}</strong> <span class="tag">${esc(row.confidence)}</span><p class="path">${esc(short(row.module))} through ${esc(row.package)}${row.version ? `@${esc(row.version)}` : ""}</p><p class="mono">${fmt(row.score)} <span class="faint">band ${fmt(row.low)}–${fmt(row.high)} · depth ${row.depth}</span></p><p class="muted">${esc(row.statement)}</p><p class="faint">${row.drivers.map((driver) => esc(driver)).join(" · ")}</p></article>`).join("") || "<p class='muted'>No engineering failure is forecast.</p>"}</div>`;
+    <div class="list">${rows.map((row) => `<article class="preset"><strong>${esc(row.mode_label)}</strong> <span class="tag">${esc(row.confidence)}</span><p class="path">${esc(short(row.module))} through ${esc(row.package)}${row.version ? `@${esc(row.version)}` : ""}</p><p class="mono">${fmt(row.score)} <span class="faint">band ${fmt(row.low)}–${fmt(row.high)} · depth ${row.depth}</span></p><p class="muted">${esc(row.statement)}</p><p class="faint">${row.drivers.map((driver) => esc(driver)).join(" · ")}</p></article>`).join("") || "<p class='muted'>No engineering failure is forecast.</p>"}</div>
+    ${predictionBlock(twin.predictions)}`;
+}
+
+function predictionBlock(report) {
+  if (!report) return "";
+  const cards = (report.questions || [])
+    .map((item) => {
+      const rows = (item.rows || [])
+        .slice(0, 3)
+        .map(
+          (row) =>
+            `<p class="path">${esc(row.title)} · ${fmt(row.index)}<br/><span class="faint">band ${fmt(row.low)}–${fmt(row.high)} · ${esc(row.detail)}</span></p>`
+        )
+        .join("");
+      return `<article class="preset"><p class="kicker">${esc(item.question)}</p><p>${esc(item.summary)}</p>${rows}</article>`;
+    })
+    .join("");
+  return `<p class="kicker" style="margin-top:16px">Predictions</p><p>${esc(report.summary || "")}</p><div class="list">${cards}</div><p class="muted">${esc(report.note || "")}</p>${algorithmsBlock(report.algorithms)}`;
 }
 
 function renderCounterfactual(twin) {
@@ -684,7 +702,8 @@ function renderCounterfactual(twin) {
   const cases = report.cases || [];
   return `
     <p class="narrative">${esc(report.note)}</p>
-    ${cases.length ? `<p>${esc(report.summary)}</p>${cases.map(counterfactualCase).join("")}` : "<p class='muted'>No recorded upgrade or build failure can be withheld.</p>"}`;
+    ${cases.length ? `<p>${esc(report.summary)}</p>${cases.map(counterfactualCase).join("")}` : "<p class='muted'>No recorded upgrade or build failure can be withheld.</p>"}
+    ${decisionBlock(report.decisions)}`;
 }
 
 function counterfactualCase(item) {
@@ -704,6 +723,20 @@ function counterfactualCase(item) {
     </section>`;
 }
 
+function decisionBlock(report) {
+  if (!report) return "";
+  const cards = (report.scenarios || [])
+    .map((item) => {
+      const rows = (item.consequences || [])
+        .slice(0, 3)
+        .map((row) => `<p class="path">${esc(short(row.module))}<br/><span class="faint">${esc(row.detail)}</span></p>`)
+        .join("");
+      return `<article class="preset"><p class="kicker">${esc(item.index_label)}</p><strong>${esc(item.title)}</strong><p>${esc(item.decision)}</p><p class="muted">${esc(item.contrary_to)}</p><p class="mono">${fmt(item.before)} → ${fmt(item.after)} <span class="${deltaTone(item.delta)}">${fmtDelta(item.delta)}</span></p><p class="faint">${esc(item.assumption)}</p>${rows}</article>`;
+    })
+    .join("");
+  return `<p class="kicker" style="margin-top:16px">Decisions</p><p>${esc(report.summary || "")}</p><div class="list">${cards || "<p class='muted'>No alternative decision can be simulated.</p>"}</div><p class="muted">${esc(report.note || "")}</p>${algorithmsBlock(report.algorithms)}`;
+}
+
 function renderDependencies(twin) {
   const report = twin.dependencies;
   if (!report) return "<p class='muted'>Rescan the repository to propagate dependency risk.</p>";
@@ -721,7 +754,26 @@ function renderDependencies(twin) {
         <p class="kicker">Where it lands</p>
         <div class="list">${modules.map((item) => `<div class="row" style="grid-template-columns: 1fr 70px"><span><span class="path">${esc(item.module)}</span><br/><span class="faint">${item.depth === 0 ? "imports" : "through imports of"} ${esc(item.via)} · depth ${item.depth}</span></span><span class="mono">${fmt(item.risk)}</span></div>`).join("") || "<p class='muted'>The risk does not reach a module.</p>"}</div>
       </section>
-    </div>`;
+    </div>
+    ${traceBlock(report.traces)}
+    ${algorithmsBlock(report.algorithms)}`;
+}
+
+function traceBlock(traces) {
+  if (!traces || !traces.length) return "";
+  const cards = traces
+    .map((trace) => {
+      const rows = (trace.affected || [])
+        .slice(0, 4)
+        .map(
+          (row) =>
+            `<p class="path">${esc(row.module)} · ${esc(row.severity)} · likelihood ${fmt(row.likelihood)}<br/><span class="faint">${esc((row.path || []).join(" → "))}<br/>${esc(row.consequence)}</span></p>`
+        )
+        .join("");
+      return `<article class="preset"><p class="kicker">${esc(trace.severity)} · ${esc(trace.kind_label)}</p><p>${esc(trace.summary)}</p>${rows}</article>`;
+    })
+    .join("");
+  return `<p class="kicker" style="margin-top:16px">Propagation</p><div class="list">${cards}</div>`;
 }
 
 function renderChange(twin) {
@@ -737,7 +789,7 @@ function renderChange(twin) {
           <button type="button" data-action="preset-change">Evaluate the retry worker</button>
         </div>
       </section>
-      <section class="panel">${result ? changeResult(result) : "<p class='kicker'>No evaluation yet</p><p class='muted'>Pick the files a change would touch. The lab walks importers out to depth 3, then the tests, packages, plugins, and recorded build failures tied to those files.</p>"}</section>
+      <section class="panel">${result ? changeResult(result) : "<p class='kicker'>No evaluation yet</p><p class='muted'>Pick the files a change would touch. Eight algorithms then walk the import graph, co-changes, the file text, test cover, and the uncertainty band on the blast-radius index.</p>"}</section>
     </div>`;
 }
 
@@ -1105,10 +1157,60 @@ function changeResult(result) {
     <p class="kicker">${esc(result.title)}</p>
     <p class="stat" style="padding:0"><span class="kicker">Change risk index</span><b>${fmt(result.risk)}</b></p>
     <p>${esc(result.recommendation)}</p>
+    ${analysisBlock(result.analysis)}
+    ${enginesBlock(result.engines)}
+    ${algorithmsBlock(result.algorithms)}
     ${impactBlock(result.impact)}
     <p class="muted">Delay pressure on the edited files: ${fmt(result.delay_pressure)}. Reviewers: ${esc(result.reviewers.join(", ") || "no recent authors")}.</p>
     <div class="list">${result.blast.map((item) => `<div class="row" style="grid-template-columns: 1fr 70px 70px"><span class="path">${esc(item.module)}<br/><span class="faint">${item.relation} · depth ${item.depth}</span></span><span class="mono">${fmt(item.bug)}</span><span class="faint">${item.test_gap ? "untested" : "tested"}</span></div>`).join("")}</div>
     ${result.objections.length ? `<p class="kicker">Objections</p>${result.objections.map((item) => `<p><span class="sev ${item.severity}">${esc(item.agent)}</span> ${esc(item.title)}</p>`).join("")}` : ""}`;
+}
+
+function analysisBlock(analysis) {
+  if (!analysis || !(analysis.answers || []).length) return "";
+  const answers = analysis.answers
+    .map((item) => `<article class="preset"><p class="kicker">${esc(item.question)}</p><p>${esc(item.answer)}</p></article>`)
+    .join("");
+  return `<p class="kicker">Change impact</p><div class="list">${answers}</div><p class="muted">${esc(analysis.note || "")}</p>`;
+}
+
+const ENGINES = [
+  ["detection", "Change detection"],
+  ["traversal", "Dependency traversal"],
+  ["propagation", "Impact propagation"],
+  ["semantic", "Semantic impact"],
+  ["tests", "Test impact"],
+  ["risk", "Risk scoring"],
+  ["explanation", "Impact explanation"],
+  ["provenance", "Evidence and provenance"],
+];
+
+function enginesBlock(engines) {
+  if (!engines) return "";
+  const cards = ENGINES.map(([key, label]) => {
+    const engine = engines[key];
+    if (!engine) return "";
+    const rows = (engine.rows || [])
+      .slice(0, 3)
+      .map((row) => `<p class="path">${esc(row.title || "")}<br/><span class="faint">${esc(row.detail || "")}</span></p>`)
+      .join("");
+    return `<article class="preset"><p class="kicker">${esc(label)}</p><p>${esc(engine.summary || "")}</p>${rows}</article>`;
+  }).join("");
+  return `<p class="kicker">Engines</p><div class="list">${cards}</div><p class="muted">${esc(engines.note || "")}</p>`;
+}
+
+function algorithmsBlock(algorithms) {
+  if (!algorithms || !(algorithms.steps || []).length) return "";
+  const cards = algorithms.steps
+    .map((step) => {
+      const rows = (step.rows || [])
+        .slice(0, 3)
+        .map((row) => `<p class="path">${esc(row.title || "")}<br/><span class="faint">${esc(row.detail || "")}</span></p>`)
+        .join("");
+      return `<article class="preset"><p class="kicker">${step.order} · ${esc(step.title)}</p><p>${esc(step.summary || "")}</p>${rows}</article>`;
+    })
+    .join("");
+  return `<p class="kicker">Algorithms</p><div class="list">${cards}</div><p class="muted">${esc(algorithms.note || "")}</p>`;
 }
 
 function impactBlock(impact) {
