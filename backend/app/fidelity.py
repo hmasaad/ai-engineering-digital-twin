@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+from app.calibrate import compare
 from app.forecast import apply_agreed
 
 PRINCIPLE = (
@@ -86,10 +87,12 @@ def assess(view: dict, raw: dict, checks: list[dict]) -> dict:
     combined = manual + history_checks(view, raw)
     combined.sort(key=lambda item: item.get("created_at") or "")
     forecast = apply_agreed(view.get("forecast") or {}, combined)
+    graph = _graph(raw)
     return {
         "principle": PRINCIPLE,
         "verdict": _verdict(combined),
-        "graph": _graph(raw),
+        "graph": graph,
+        "calibration": compare(view, raw, graph),
         "uncertainty": _uncertainty(forecast),
         "learning": _learning(view.get("outcomes") or [], view.get("weight_history") or []),
         "causation": _causation(view, combined),

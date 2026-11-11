@@ -17,7 +17,7 @@ const TITLES = {
   learn: ["Learning", "Record outcomes and update beliefs"],
   loop: ["Loop", "Policy, calibration, and the next engineering action"],
   run: ["Run", "Agents, a safety gate, and a person on the governed steps"],
-  fidelity: ["Fidelity", "What the twin has matched, and what is still unproven"],
+  fidelity: ["Fidelity", "How the twin compares with the scan, the history, and recorded outcomes"],
   accuracy: ["Accuracy", "How close the indexes are to recorded outcomes and production checks"],
 };
 
@@ -1036,7 +1036,20 @@ function renderFidelity(twin) {
         ${checks}
         <p class="muted">${esc(report.labels.note)}</p>
       </section>
-    </div>`;
+    </div>
+    ${calibrationBlock(report.calibration)}`;
+}
+
+function calibrationBlock(report) {
+  if (!report) return "";
+  const cards = (report.comparisons || [])
+    .map(
+      (item) =>
+        `<article class="preset"><p class="kicker">${esc(item.reading)}</p><strong>${esc(item.title)}</strong><p>${esc(item.question)}</p><p class="muted">${esc(item.detail)}</p></article>`
+    )
+    .join("");
+  const trust = report.trust ? ` Accuracy trust stays ${report.trust}.` : "";
+  return `<p class="kicker" style="margin-top:16px">Calibration</p><p>${esc(report.summary || "")}${esc(trust)}</p><div class="list">${cards}</div><p class="muted">${esc(report.note || "")}</p>`;
 }
 
 function renderRun() {

@@ -1179,6 +1179,34 @@ def test_graph_edges_are_resolved_imports_and_simulation_is_not_evidence(raw, tw
     assert report["verdict"] != "proven"
 
 
+def test_calibration_compares_the_scan_with_the_record(raw, twin):
+    from app.fidelity import PRINCIPLE, assess
+
+    report = assess(twin, raw, [])
+    calibration = report["calibration"]
+    assert report["principle"] == PRINCIPLE
+    assert report["verdict"] != "proven"
+    assert calibration["trust"] == twin["accuracy"]["trust"] == "hold"
+    comparisons = {item["id"]: item for item in calibration["comparisons"]}
+    assert list(comparisons) == ["architecture", "dependencies", "simulations", "failures", "incidents", "builds"]
+    assert comparisons["architecture"]["reading"] == "aligned"
+    assert comparisons["dependencies"]["reading"] in {"aligned", "partial"}
+    assert comparisons["dependencies"]["detail"].count("does not install") == 1 or "does not install" in comparisons["dependencies"]["detail"]
+    assert comparisons["simulations"]["reading"] == "unmeasured"
+    assert "not evidence" in comparisons["simulations"]["detail"]
+    assert comparisons["failures"]["reading"] == "unconfirmed"
+    assert "not scored as a hit" in comparisons["failures"]["detail"]
+    assert "psycopg" in comparisons["failures"]["detail"]
+    assert comparisons["incidents"]["reading"] == "unconfirmed"
+    assert "payments" in comparisons["incidents"]["detail"]
+    assert comparisons["builds"]["reading"] == "unconfirmed"
+    assert "duration" in comparisons["builds"]["detail"]
+    assert "learning rate" in calibration["note"]
+    assert twin["modules"]
+    bug = next(module["risks"]["bug"] for module in twin["modules"] if module["path"] == RETRY)
+    assert bug > 0.8
+
+
 def test_a_band_across_the_midpoint_does_not_confirm_the_score():
     from app.fidelity import assess, judge
 
