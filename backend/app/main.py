@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.decide import analyze
+from app.decision_intelligence import advise
 from app.impact import assess_change
 from app.settings import EXAMPLE, FRONTEND, ROOT
 from app.simulate import run_counterfactual, run_scenario
@@ -101,7 +102,9 @@ def create_app() -> FastAPI:
             view = current_view()
             report = run_counterfactual(raw, view["models"], body.module)
             width = ((view.get("forecast") or {}).get("by_module") or {}).get(body.module, {}).get("width", 0.12)
-            return analyze(report, float(width))
+            decision = analyze(report, float(width))
+            decision["algorithms"] = advise(view, decision)
+            return decision
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
         except KeyError as exc:

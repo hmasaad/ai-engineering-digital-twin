@@ -11,7 +11,7 @@ const TITLES = {
   scenarios: ["Scenarios", "Run a decision against the model"],
   whatif: ["What if", "Counterfactual simulation of decisions that were not taken"],
   counterfactual: ["Counterfactual", "What a different engineering decision would change"],
-  decide: ["Decide", "Tradeoffs, the value of a measurement, and the next branch"],
+  decide: ["Decide", "The balanced choice, then the action the constraints allow"],
   engine: ["Engine", "One engineering action, gated by how accurate the twin is"],
   council: ["Council", "Specialized agents, sequenced into one plan"],
   learn: ["Learning", "Record outcomes and update beliefs"],
@@ -892,7 +892,7 @@ function renderDecide(twin) {
   const result = state.decision && state.decision.module === state.decideModule ? state.decision : null;
   const options = code.map((module) => `<option value="${esc(module.path)}" ${module.path === state.decideModule ? "selected" : ""}>${esc(short(module.path))} · bug ${fmt(module.risks.bug)}</option>`).join("");
   return `
-    <p class="narrative">Objectives stay separate. A measurement is worth taking when it would change the choice, or when the effect of acting sits inside the forecast band. The second step depends on whether the failure lands.</p>
+    <p class="narrative">Objectives stay separate. A measurement is worth taking when it would change the choice, or when the effect of acting sits inside the forecast band. Ten steps then read that decision. Accuracy can hold the balanced choice. The repository is not edited.</p>
     <div class="actions" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap">
       <select data-action="decide-module">${options}</select>
       <button type="button" class="primary" data-action="decide-run">Analyze decision</button>
@@ -928,7 +928,15 @@ function decisionResult(result) {
         <p class="kicker" style="margin-top:14px">Causal paths</p>
         <div class="list">${causal}</div>
       </section>
-    </div>`;
+    </div>
+    ${decisionAdvice(result.algorithms)}`;
+}
+
+function decisionAdvice(algorithms) {
+  if (!algorithms) return "";
+  const action = algorithms.action || {};
+  const line = action.title ? `<p class="kicker">Action the constraints allow</p><p>${esc(action.title)}. ${esc(action.because || "")}</p>` : "";
+  return `${line}${algorithmsBlock(algorithms)}`;
 }
 
 const RUN_STATUS = {

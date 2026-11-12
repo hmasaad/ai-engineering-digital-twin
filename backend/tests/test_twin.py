@@ -773,6 +773,58 @@ def test_decision_keeps_tradeoffs_and_asks_before_acting_inside_the_band(raw):
     assert front.isdisjoint(dominated)
 
 
+def test_decision_intelligence_reads_the_choice_without_changing_it(raw, twin):
+    from app.decide import analyze
+    from app.decision_intelligence import advise
+
+    report = run_counterfactual(raw, None, RETRY)
+    wide = analyze(report, 0.25)
+    before = (
+        wide["status"],
+        wide["recommendation"]["action"],
+        wide["information"]["value"],
+        wide["plan"]["now"]["action"],
+        tuple(item["action"] for item in wide["pareto"]),
+    )
+    advice = advise(twin, wide)
+    assert (
+        wide["status"],
+        wide["recommendation"]["action"],
+        wide["information"]["value"],
+        wide["plan"]["now"]["action"],
+        tuple(item["action"] for item in wide["pareto"]),
+    ) == before
+    titles = [step["title"] for step in advice["steps"]]
+    assert titles == [
+        "Multi-Objective Engineering Optimization",
+        "Causal Decision Intelligence",
+        "Value of Information (VoI)",
+        "Decision-Theoretic Planning",
+        "Risk-Aware Resource Allocation",
+        "Constrained Decision Optimization",
+        "Contextual Bandits for Engineering Decisions",
+        "Reinforcement Learning for Adaptive Decisions",
+        "Decision Outcome Attribution",
+        "Continuous Decision Policy Evaluation",
+    ]
+    assert advice["steps"][0]["action"] == wide["recommendation"]["action"]
+    assert "regret score" in advice["steps"][0]["summary"]
+    assert advice["steps"][2]["value"] == wide["information"]["value"]
+    assert "not a probability" in advice["steps"][2]["summary"]
+    assert advice["steps"][3]["action"] == wide["plan"]["now"]["action"]
+    assert advice["steps"][7]["updated"] is False
+    assert advice["steps"][7]["alpha"] == 0.45
+    assert "does not update" in advice["steps"][7]["summary"]
+    assert advice["steps"][8]["reading"] == "unvalidated"
+    assert advice["steps"][9]["trust"] == twin["accuracy"]["trust"] == "hold"
+    assert advice["action"]["name"] == "hold"
+    assert advice["writes_repository"] is False
+    assert "not edited" in advice["note"]
+    bug = next(module["risks"]["bug"] for module in twin["modules"] if module["path"] == RETRY)
+    assert bug > 0.8
+    assert twin["engine"]["status"] == "hold"
+
+
 def test_policy_abandons_an_action_that_keeps_failing(raw):
     from app.optimize import apply_feedback, build_loop, empty_policy, reliability, apply_calibration
 
