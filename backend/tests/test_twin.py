@@ -1207,6 +1207,41 @@ def test_northwind_run_keeps_security_with_a_person(twin):
     assert mission["writes_repository"] is False
 
 
+def test_a_run_plans_work_without_writing_or_starting_ci():
+    from app.autonomy import build_mission, decide
+
+    mission = build_mission(
+        [
+            _step("Security", "critical", [RETRY], title="Secret"),
+            _step("Quality", "high", [RETRY], title="Tests"),
+        ]
+    )
+    execution = mission["execution"]
+    assert [step["title"] for step in execution["steps"]] == [
+        "Autonomous engineering task planning",
+        "Multi-agent orchestration",
+        "Code modification and test generation",
+        "CI/CD workflow execution",
+        "Human approval gates",
+        "Failure recovery and rollback",
+        "Execution monitoring and audit trails",
+    ]
+    assert execution["writes_repository"] is False
+    assert execution["launches_ci"] is False
+    assert execution["steps"][2]["applied"] is False
+    assert "not written" in execution["steps"][2]["summary"]
+    assert execution["steps"][3]["launched"] is False
+    assert mission["tasks"][0]["status"] == "awaiting"
+    assert mission["tasks"][0]["repository"] == "unchanged"
+    decide(mission, "t1", False)
+    assert mission["writes_repository"] is False
+    assert mission["execution"]["launches_ci"] is False
+    assert mission["tasks"][1]["action"] == "measure"
+    assert mission["tasks"][1]["repository"] == "unchanged"
+    assert "measurement" in mission["execution"]["steps"][5]["summary"]
+    assert mission["execution"]["steps"][2]["applied"] is False
+
+
 def test_graph_edges_are_resolved_imports_and_simulation_is_not_evidence(raw, twin):
     from app.fidelity import PRINCIPLE, assess
 

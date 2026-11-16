@@ -7,7 +7,7 @@ A rejected or failed step releases the next agent with a measurement. The
 model changes only when a person records the outcome.
 """
 
-from __future__ import annotations
+from app.execution import describe
 
 RULES = [
     "The twin never writes the repository.",
@@ -47,6 +47,7 @@ def idle_mission() -> dict:
         "rules": list(RULES),
         "tasks": [],
         "log": [],
+        "execution": describe({"tasks": [], "log": [], "recovered": False}),
     }
 
 
@@ -99,6 +100,7 @@ def build_mission(plan: list[dict]) -> dict:
     mission["tasks"] = tasks
     mission["status"] = _status(tasks, False)
     _stamp(mission, "started", "twin", "Started the run. Safe measurements were recorded. Everything else waits.")
+    mission["execution"] = describe(mission)
     return mission
 
 
@@ -121,6 +123,7 @@ def decide(mission: dict, task_id: str, approve: bool) -> dict:
         note = _recover(mission, task, "rejected")
         _stamp(mission, "rejected", "human", f"Rejected {task['agent']} on {task['title']}. {note}")
     mission["status"] = _status(mission["tasks"], mission["recovered"])
+    mission["execution"] = describe(mission)
     return mission
 
 
@@ -133,6 +136,7 @@ def fail(mission: dict, task_id: str) -> dict:
     note = _recover(mission, task, "failed")
     _stamp(mission, "failed", "human", f"{task['agent']} did not hold on {task['title']}. {note}")
     mission["status"] = _status(mission["tasks"], mission["recovered"])
+    mission["execution"] = describe(mission)
     return mission
 
 
@@ -154,6 +158,7 @@ def mark_learned(mission: dict, task_id: str, happened: bool, note: str) -> dict
     task["outcome"] = happened
     _stamp(mission, "learned", "human", note)
     mission["status"] = _status(mission["tasks"], mission["recovered"])
+    mission["execution"] = describe(mission)
     return mission
 
 

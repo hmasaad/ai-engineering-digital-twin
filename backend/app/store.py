@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.autonomy import build_mission, decide, fail, idle_mission, mark_learned, prepare_learning
+from app.execution import describe
 from app.fidelity import assess, history_checks, prepare_check, updates_model
 from app.forecast import apply_agreed
 from app.optimize import apply_feedback, build_loop, empty_policy, situation
@@ -354,7 +355,9 @@ def current_mission() -> dict:
     if path is None:
         raise LookupError("No project scanned")
     with _connect() as conn:
-        return _load_mission(conn, path)
+        mission = _load_mission(conn, path)
+    mission["execution"] = describe(mission)
+    return mission
 
 
 def start_run() -> dict:

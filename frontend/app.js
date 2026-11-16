@@ -16,7 +16,7 @@ const TITLES = {
   council: ["Council", "Specialized agents, sequenced into one plan"],
   learn: ["Learning", "Record outcomes and update beliefs"],
   loop: ["Loop", "Policy, calibration, and the next engineering action"],
-  run: ["Run", "Agents, a safety gate, and a person on the governed steps"],
+  run: ["Run", "A governed plan. Proposals stay in the twin, and the repository is not edited"],
   fidelity: ["Fidelity", "How the twin compares with the scan, the history, and recorded outcomes"],
   accuracy: ["Accuracy", "How close the indexes are to recorded outcomes and production checks"],
 };
@@ -1071,7 +1071,7 @@ function renderRun() {
     ? mission.log.slice().reverse().map((entry) => `<p><span class="path">${esc(entry.actor === "human" ? "You" : "Twin")}</span> ${esc(entry.detail)}</p>`).join("")
     : "<p class='muted'>The log starts when a run starts.</p>";
   return `
-    <p class="narrative">Agents that share a file wait for each other. The twin records a measurement on one file. Security work, high severity, and a wide blast radius wait for you. If a step fails or is rejected, the next agent continues with a measurement. The repository is not edited. The model moves only when you record the outcome.</p>
+    <p class="narrative">Agents that share a file wait for each other. The twin records a measurement on one file. Security work, high severity, and a wide blast radius wait for you. A code change and a test stay proposals. CI is not started. If a step fails or is rejected, the next agent continues with a measurement. The repository is not edited.</p>
     <div class="actions" style="margin-bottom:16px"><button type="button" class="primary" data-action="run-start">Start a run</button></div>
     <div class="cols">
       <section>
@@ -1084,7 +1084,22 @@ function renderRun() {
         <p class="kicker" style="margin-top:14px">Run log</p>
         ${log}
       </section>
-    </div>`;
+    </div>
+    ${executionBlock(mission.execution)}`;
+}
+
+function executionBlock(execution) {
+  if (!execution || !(execution.steps || []).length) return "";
+  const cards = execution.steps
+    .map((step) => {
+      const rows = (step.rows || [])
+        .slice(0, 3)
+        .map((row) => `<p class="path">${esc(row.title || "")}<br/><span class="faint">${esc(row.detail || "")}</span></p>`)
+        .join("");
+      return `<article class="preset"><p class="kicker">${step.order} · ${esc(step.title)}</p><p>${esc(step.summary || "")}</p>${rows}</article>`;
+    })
+    .join("");
+  return `<p class="kicker" style="margin-top:16px">Execution</p><div class="list">${cards}</div><p class="muted">${esc(execution.note || "")}</p>`;
 }
 
 function runCard(mission, task) {
