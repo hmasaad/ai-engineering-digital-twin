@@ -15,7 +15,7 @@ const TITLES = {
   engine: ["Engine", "One engineering action, gated by how accurate the twin is"],
   council: ["Council", "Specialized agents, sequenced into one plan"],
   learn: ["Learning", "Record outcomes and update beliefs"],
-  loop: ["Loop", "Policy, calibration, and the next engineering action"],
+  loop: ["Loop", "Recorded engineering signals, one proposal, and whether to keep it"],
   run: ["Run", "A governed plan. Proposals stay in the twin, and the repository is not edited"],
   fidelity: ["Fidelity", "How the twin compares with the scan, the history, and recorded outcomes"],
   accuracy: ["Accuracy", "How close the indexes are to recorded outcomes and production checks"],
@@ -883,7 +883,27 @@ function renderLoop(twin) {
         <p class="kicker" style="margin-top:14px">Recent steps</p>
         ${steps || "<p class='muted'>No recorded steps yet.</p>"}
       </section>
-    </div>`;
+    </div>
+    ${ecosystemBlock(twin.ecosystem)}`;
+}
+
+function ecosystemBlock(report) {
+  if (!report) return "";
+  const signals = (report.signals || [])
+    .map(
+      (item) =>
+        `<article class="preset"><p class="kicker">${esc(item.reading)}</p><strong>${esc(item.title)}</strong><p class="muted">${esc(item.detail)}</p></article>`
+    )
+    .join("");
+  const proposal = report.proposal || {};
+  const adoption = report.adoption || {};
+  return `
+    <p class="kicker" style="margin-top:16px">Ecosystem</p>
+    <p>${esc(report.summary || "")}</p>
+    <p>${esc(proposal.title || "")}. ${esc(proposal.detail || "")}</p>
+    <p class="muted">${esc((report.experiment || {}).detail || "")} ${esc((report.outcome || {}).detail || "")} ${esc(adoption.detail || "")}</p>
+    <div class="list">${signals}</div>
+    <p class="muted">${esc(report.note || "")}</p>`;
 }
 
 function renderDecide(twin) {

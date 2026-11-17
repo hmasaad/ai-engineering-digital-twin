@@ -825,6 +825,48 @@ def test_decision_intelligence_reads_the_choice_without_changing_it(raw, twin):
     assert twin["engine"]["status"] == "hold"
 
 
+def test_the_ecosystem_reads_history_and_holds_the_proposal(twin):
+    report = twin["ecosystem"]
+    signals = {item["id"]: item for item in report["signals"]}
+    assert list(signals) == [
+        "review",
+        "rejection",
+        "builds",
+        "tests",
+        "regressions",
+        "deploys",
+        "recovery",
+        "debt",
+        "workload",
+        "agents",
+    ]
+    assert signals["review"]["reading"] == "observed"
+    assert signals["review"]["module"] == RETRY
+    assert "72" in signals["review"]["detail"]
+    assert signals["rejection"]["reading"] == "unmeasured"
+    assert "not computed" in signals["rejection"]["detail"]
+    assert "not a frequency" in signals["builds"]["detail"]
+    assert "psycopg" in signals["builds"]["detail"]
+    assert signals["tests"]["reading"] == "unmeasured"
+    assert signals["regressions"]["reading"] == "unmeasured"
+    assert signals["deploys"]["value"] == 3
+    assert "52" in signals["recovery"]["detail"]
+    assert signals["debt"]["reading"] == "unmeasured"
+    assert "Mina Chen" in signals["workload"]["detail"]
+    assert signals["agents"]["reading"] == "unmeasured"
+    assert report["proposal"]["applied"] is False
+    assert report["proposal"]["module"] == RETRY
+    assert report["experiment"]["status"] == "not_run"
+    assert report["adoption"]["decision"] == "hold"
+    assert report["writes_repository"] is False
+    assert report["adapts_workflow"] is False
+    assert "0.45" in report["note"]
+    bug = next(module["risks"]["bug"] for module in twin["modules"] if module["path"] == RETRY)
+    assert bug > 0.8
+    assert twin["accuracy"]["trust"] == "hold"
+    assert twin["engine"]["status"] == "hold"
+
+
 def test_policy_abandons_an_action_that_keeps_failing(raw):
     from app.optimize import apply_feedback, build_loop, empty_policy, reliability, apply_calibration
 

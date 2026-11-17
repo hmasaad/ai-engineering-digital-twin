@@ -9,6 +9,7 @@ from app.agents import ROSTER, analyze, coordinate
 from app.counterfactual import simulate
 from app.decision_sim import simulate_decisions
 from app.engine import decide
+from app.ecosystem import observe
 from app.failures import predict
 from app.predict import answer as predict_answers
 from app.forecast import build_forecast
@@ -104,6 +105,7 @@ def build_twin(
     document["counterfactual"]["decisions"] = simulate_decisions(document)
     document["accuracy"] = evaluate(document, raw)
     document["engine"] = decide(document, document["accuracy"])
+    document["ecosystem"] = observe(document)
     return document
 
 
